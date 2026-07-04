@@ -1,0 +1,43 @@
+# ─── Web Framework ────────────────────────────────────────────────────────────
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.17
+
+# ─── Config / Env ─────────────────────────────────────────────────────────────
+pydantic-settings==2.6.1
+python-dotenv==1.0.1
+
+# ─── Database / Auth ──────────────────────────────────────────────────────────
+supabase==2.10.0
+PyJWT[crypto]==2.10.1
+cryptography>=42.0
+
+# ─── Job Queue ────────────────────────────────────────────────────────────────
+celery[redis]==5.4.0
+redis==5.2.1
+kombu==5.4.2
+
+# ─── AI / External APIs ───────────────────────────────────────────────────────
+openai==1.57.2
+httpx>=0.26,<0.28
+
+# ─── Storage ──────────────────────────────────────────────────────────────────
+boto3==1.35.87
+
+# ─── Video / Media ────────────────────────────────────────────────────────────
+# ffmpeg-python==0.2.0  # uncomment when FFmpeg is installed on VPS
+
+# ─── Observability ────────────────────────────────────────────────────────────
+sentry-sdk[fastapi]==2.19.2
+structlog==24.4.0
+
+# ─── Utilities ────────────────────────────────────────────────────────────────
+python-slugify==8.0.4
+uuid6==2024.1.12
+
+# ─── Testing ──────────────────────────────────────────────────────────────────
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-mock==3.14.0
+pydantic[email]>=2.0
+# Lemon Squeezy is integrated via its REST API using httpx (above) — no SDK needed.

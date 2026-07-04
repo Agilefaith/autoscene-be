@@ -1,0 +1,28 @@
+# Environment / secrets — NEVER commit
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+dist/
+build/
+
+# Redis dump / logs / temp
+dump.rdb
+*.rdb
+*.log
+celery*.log
+uploads/
+tmp/
+
+# OS / editors
+.DS_Store
+*.swp
+.idea/

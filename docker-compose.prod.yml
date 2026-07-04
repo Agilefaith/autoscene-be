@@ -1,0 +1,74 @@
+# Production compose. Code is baked into the image (no bind-mount, no --reload);
+# everything restarts unless explicitly stopped. Put a reverse proxy (Caddy/Nginx)
+# in front of `api` for TLS. Redis is internal-only (no published port).
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    restart: unless-stopped
+    ports:
+      - "8000:8000"        # bind to 127.0.0.1:8000 behind a reverse proxy if preferred
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker-fast:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.core.celery_app.celery_app worker -Q fast -c 10 --loglevel=info
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Heavy queue: SDXL image gen + FFmpeg motion render + assembly. Scale by RAM/CPU
+  # (each media task also renders scene clips in parallel via scene_render_concurrency).
+  worker-media:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.core.celery_app.celery_app worker -Q media -c 4 --loglevel=info
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Celery Beat: stuck-job watchdog + monthly video-quota reset.
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.core.celery_app.celery_app beat --loglevel=info
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis_data:
