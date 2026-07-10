@@ -64,6 +64,8 @@ async def save_script(body: ScriptSaveRequest, user_id: CurrentUserId):
         "audience": body.target_audience,
         "goal": body.goal,
         "style": body.style,
+        "niche": body.niche,
+        "duration_seconds": body.duration_seconds,
     }
     result = client.table("scripts").insert(row).execute()
     return result.data[0]

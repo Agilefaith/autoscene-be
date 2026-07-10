@@ -25,6 +25,8 @@ class ScriptSaveRequest(BaseModel):
     target_audience: Optional[str] = None
     goal: Optional[str] = None
     style: Optional[str] = None
+    niche: Optional[str] = None
+    duration_seconds: Optional[int] = None
 
 
 class ScriptUpdateRequest(BaseModel):
@@ -44,6 +46,8 @@ class ScriptResponse(BaseModel):
     target_audience: Optional[str] = None
     goal: Optional[str] = None
     style: Optional[str] = None
+    niche: Optional[str] = None
+    duration_seconds: Optional[int] = None
     created_at: datetime
 
 
