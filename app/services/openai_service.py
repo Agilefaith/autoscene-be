@@ -48,11 +48,11 @@ async def describe_reference_image(image_url: str) -> str:
 # Explicit guidance so each Style/Goal/Tone choice produces a visibly distinct,
 # consistent script — not just a free-text label dropped into the prompt.
 STYLE_GUIDANCE: dict[str, str] = {
-    "ugc":          "Authentic user-generated feel: first person, casual, like talking to a friend on camera. Conversational and relatable, not salesy.",
-    "ad":           "Polished advertisement: lead with the core value proposition, stay benefit-driven, and finish with a strong, specific call to action.",
-    "tiktok_hook":  "Open with a 3-second scroll-stopping hook. Very short punchy sentences, pattern interrupts, fast pace, high energy to keep them watching.",
-    "documentary":  "Informative narrated documentary style: calm, credible, explanatory; build understanding step by step with a measured pace.",
-    "ai_influencer":"Confident on-camera creator voice: personable, opinionated, trend-aware, speaking directly to the viewer.",
+    "storytelling":  "Tell it as a story: a hook, a turn, and a satisfying payoff; vivid, immersive narration.",
+    "educational":   "Clear explainer voice: teach one idea simply, step by step, so anyone understands by the end.",
+    "documentary":   "Informative narrated documentary style: calm, credible, explanatory; measured pace.",
+    "punchy":        "Open with a scroll-stopping hook. Very short punchy sentences, fast pace, high energy.",
+    "conversational":"Relaxed, relatable narration, like explaining something to a friend; natural and warm.",
 }
 
 GOAL_GUIDANCE: dict[str, str] = {
@@ -115,8 +115,8 @@ async def generate_script(
     niche_guidance = NICHE_GUIDANCE.get(niche, f"{niche}." if niche else "")
 
     system = (
-        "You are an expert UGC video scriptwriter. "
-        "Write engaging, natural-sounding scripts for short-form videos. "
+        "You are an expert scriptwriter for faceless, narrated short-form videos. "
+        "Write engaging, natural-sounding narration meant to be read by a voiceover. "
         "Output ONLY the script text — no scene directions, no annotations, no titles. "
         "Follow the STYLE, GOAL, and TONE precisely so the script clearly reflects each. "
         "Length discipline is critical: the script is read aloud at ~130 words/min, "

@@ -8,11 +8,15 @@ generated concurrently (bounded) per PRD §8 "batch image generation".
 import asyncio
 import time
 
+import httpx
+
 from app.core.celery_app import celery_app
 from app.core.config import get_settings
 from app.services.supabase import get_supabase_client
 from app.services.stability import generate_image, ContentFilteredError
+from app.services.gemini_image import generate_image_gemini
 from app.services.backblaze import upload_bytes
+from app.schemas.common import style_sdxl_preset
 from app.workers.tasks.project_common import (
     log_event, update_project, get_project, get_scenes, friendly_error,
     is_cancelled, refund_on_final_failure,
@@ -35,28 +39,51 @@ def _prompts_for(scene: dict, render_mode: str) -> list[str]:
     return [scene.get("image_prompt") or ""]
 
 
-async def _gen_one(prompt: str, fmt: str, style_preset: str | None, seed: int) -> bytes:
-    """Generate a single image, retrying past the content filter with a fresh seed."""
+def _fetch_reference(url: str | None) -> bytes | None:
+    """Download the project's reference image once (for Gemini character lock)."""
+    if not url:
+        return None
     try:
-        return await generate_image(prompt, fmt, seed=seed, style_preset=style_preset)
+        with httpx.Client(timeout=60) as c:
+            r = c.get(url)
+            r.raise_for_status()
+            return r.content
+    except httpx.HTTPError:
+        return None
+
+
+async def _gen_one(prompt: str, fmt: str, sdxl_preset: str | None, seed: int,
+                   ref_bytes: bytes | None) -> bytes:
+    """Generate one image. Gemini is primary (character lock via the reference +
+    high style fidelity); Stability SDXL is the fallback. Style is already baked
+    into the prompt, so Gemini needs no preset."""
+    if settings.image_provider == "gemini" and settings.google_ai_api_key:
+        try:
+            return await asyncio.to_thread(
+                generate_image_gemini, prompt, fmt, reference_bytes=ref_bytes
+            )
+        except Exception:
+            pass  # fall through to Stability
+    try:
+        return await generate_image(prompt, fmt, seed=seed, style_preset=sdxl_preset)
     except ContentFilteredError:
-        # Softened retry: different seed often clears a spurious filter hit.
-        return await generate_image(prompt, fmt, seed=seed + 7, style_preset=style_preset)
+        return await generate_image(prompt, fmt, seed=seed + 7, style_preset=sdxl_preset)
 
 
-async def _generate_scene_images(scene: dict, project: dict, sem: asyncio.Semaphore) -> list[str]:
+async def _generate_scene_images(scene: dict, project: dict, sem: asyncio.Semaphore,
+                                 ref_bytes: bytes | None) -> list[str]:
     """Generate + upload all images for one scene. Returns the list of public URLs."""
     fmt = project["format"]
-    style_preset = project.get("style") or None
+    sdxl_preset = style_sdxl_preset(project.get("style") or "")  # only used by the Stability fallback
     seed = int(scene.get("seed") or 0)
     prompts = _prompts_for(scene, project["render_mode"])
 
     urls: list[str] = []
     for i, prompt in enumerate(prompts):
         async with sem:
-            img = await _gen_one(prompt, fmt, style_preset, seed + i if project["render_mode"] == "mode_2" else seed)
-        # Mode 2 frames share the seed family (seed, seed+1, seed+2) for continuity
-        # with slight variation; Mode 1 uses the scene seed directly.
+            img = await _gen_one(prompt, fmt, sdxl_preset,
+                                 seed + i if project["render_mode"] == "mode_2" else seed,
+                                 ref_bytes)
         key = f"projects/{project['user_id']}/{project['id']}/scene_{scene['idx']:03d}_{i}.png"
         urls.append(upload_bytes(img, key, "image/png"))
     return urls
@@ -64,8 +91,9 @@ async def _generate_scene_images(scene: dict, project: dict, sem: asyncio.Semaph
 
 async def _generate_all(project: dict, scenes: list[dict]) -> dict[str, list[str]]:
     sem = asyncio.Semaphore(_MAX_CONCURRENCY)
+    ref_bytes = await asyncio.to_thread(_fetch_reference, project.get("reference_image_url"))
     results = await asyncio.gather(
-        *[_generate_scene_images(s, project, sem) for s in scenes],
+        *[_generate_scene_images(s, project, sem, ref_bytes) for s in scenes],
         return_exceptions=True,
     )
     out: dict[str, list[str]] = {}
@@ -135,7 +163,8 @@ def regenerate_single_scene(self, scene_id: str):
         return
     try:
         sem = asyncio.Semaphore(_MAX_CONCURRENCY)
-        urls = asyncio.run(_generate_scene_images({**scene, "image_urls": None}, project, sem))
+        ref_bytes = _fetch_reference(project.get("reference_image_url"))
+        urls = asyncio.run(_generate_scene_images({**scene, "image_urls": None}, project, sem, ref_bytes))
         client.table("scenes").update(
             {"image_urls": urls, "status": "image_ready", "error_message": None}
         ).eq("id", scene_id).execute()

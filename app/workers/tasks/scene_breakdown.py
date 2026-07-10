@@ -15,14 +15,13 @@ from app.workers.tasks.project_common import (
 
 def _build_scene_rows(project: dict, scenes: list[dict]) -> list[dict]:
     """Attach per-scene generation params (seed + motion) and FK columns."""
-    # ONE seed shared by every scene (best-effort character consistency): the same
-    # noise anchor plus the reused character description keeps SDXL output as close
-    # as its text-to-image API allows. Mode 2 varies within a scene via seed+i.
-    project_seed = random.randint(1, 2_000_000_000)
     rows = []
     for s in scenes:
-        # Camera move chosen to fit the scene's emotion (deterministic per scene).
-        rng = random.Random(project_seed + s["idx"])
+        # A DISTINCT seed per scene so images vary scene-to-scene (character
+        # consistency is handled by the reference image on the Gemini engine, not
+        # by a shared seed). Mode 2 varies within a scene via seed+i.
+        seed = random.randint(1, 2_000_000_000)
+        rng = random.Random(seed)
         rows.append({
             "project_id": project["id"],
             "user_id": project["user_id"],
@@ -33,7 +32,7 @@ def _build_scene_rows(project: dict, scenes: list[dict]) -> list[dict]:
             "environment": s.get("environment"),
             "image_prompt": s.get("image_prompt"),
             "image_prompts": s.get("image_prompts"),
-            "seed": project_seed,
+            "seed": seed,
             "motion_type": motion_for_emotion(s.get("emotion") or "", rng),
             "duration_seconds": s.get("duration_seconds", 10),
             "status": "prompted",
@@ -57,24 +56,13 @@ def _run_breakdown(project_id: str) -> int:
     if not content.strip():
         raise ValueError("Project script is empty")
 
-    # Best-effort character consistency: build a fixed character description from
-    # the reference image once (via GPT-Vision) and reuse it across every scene.
-    character_desc = project.get("character_desc") or ""
-    ref_url = project.get("reference_image_url")
-    if ref_url and not character_desc:
-        from app.services.openai_service import describe_reference_image
-        character_desc = asyncio.run(describe_reference_image(ref_url))
-        if character_desc:
-            client.table("projects").update(
-                {"character_desc": character_desc}
-            ).eq("id", project_id).execute()
-
+    # Character consistency is now handled by passing the reference image directly
+    # to the image engine (Gemini), not by a GPT-Vision text description.
     scenes = asyncio.run(breakdown_script(
         content,
         render_mode=project["render_mode"],
         niche=project.get("niche") or "",
         style=project.get("style") or "",
-        character_desc=character_desc,
         duration_seconds=project["duration_seconds"],
         scene_duration=project.get("scene_duration_seconds"),
     ))

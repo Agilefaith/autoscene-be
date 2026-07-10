@@ -71,6 +71,35 @@ RENDER_DIMENSIONS: dict[str, tuple[int, int]] = {
     "1:1":  (1080, 1080),
 }
 
+# ── Visual styles (the ONLY four Faith specified) ─────────────────────────────
+# Each maps to a strong prompt-style string (engine-agnostic; prepended to every
+# scene image prompt so the whole video shares one look) + the closest SDXL
+# style_preset for the Stability fallback. On Gemini the prompt text alone yields
+# high fidelity (incl. Ghibli / Family Guy), so no preset is needed there.
+STYLES: dict[str, dict] = {
+    "stickman":   {"label": "Stickman",         "sdxl_preset": "line-art",
+                   "prompt": "minimalist black stickman line drawing, simple stick figures with round heads, plain white background, hand-drawn doodle style, thin black lines"},
+    "cartoon":    {"label": "Cartoon",          "sdxl_preset": "comic-book",
+                   "prompt": "bold flat 2D cartoon illustration, thick clean black outlines, bright vibrant flat colors, playful cartoon style"},
+    "ghibli":     {"label": "Ghibli",           "sdxl_preset": "anime",
+                   "prompt": "Studio Ghibli anime style, soft hand-painted watercolor backgrounds, warm gentle lighting, whimsical detailed nature, cel-shaded characters"},
+    "family_guy": {"label": "Family Guy Style", "sdxl_preset": "comic-book",
+                   "prompt": "Family Guy adult-cartoon TV style, flat bold black outlines, simple rounded character shapes, flat cel shading, sitcom animation look"},
+}
+STYLE_IDS: list[str] = list(STYLES.keys())
+DEFAULT_STYLE = "cartoon"
+
+
+def style_prompt(style_id: str) -> str:
+    """Strong style descriptor prepended to every image prompt ("" if unknown)."""
+    return (STYLES.get(style_id) or {}).get("prompt", "")
+
+
+def style_sdxl_preset(style_id: str) -> str | None:
+    """Closest SDXL style_preset for the Stability fallback engine."""
+    return (STYLES.get(style_id) or {}).get("sdxl_preset")
+
+
 # Niches supported (PRD §5).
 NICHES: list[str] = [
     "Bible storytelling", "Finance storytelling", "History", "Psychology",

@@ -14,13 +14,13 @@ import math
 from openai import AsyncOpenAI
 
 from app.core.config import get_settings
+from app.schemas.common import style_prompt
 
 settings = get_settings()
 _client = AsyncOpenAI(api_key=settings.openai_api_key)
 
-# A scene's image prompt should always carry these so SDXL output stays on-style
-# and consistent across scenes.
-_STYLE_SUFFIX = "highly detailed, professional, sharp focus, dramatic lighting"
+# Quality boosters appended to every prompt.
+_STYLE_SUFFIX = "highly detailed, sharp focus, professional lighting"
 
 
 def target_scene_count(duration_seconds: int, scene_duration: int) -> int:
@@ -49,12 +49,9 @@ def _system_prompt(render_mode: str) -> str:
     return base
 
 
-def _user_prompt(script: str, niche: str, style: str, n_scenes: int, render_mode: str, character: str = "") -> str:
-    style_line = f"Visual style: {style}." if style else "Visual style: cinematic, photographic."
+def _user_prompt(script: str, niche: str, style_text: str, n_scenes: int, render_mode: str) -> str:
+    style_line = f"Visual style for EVERY scene: {style_text}." if style_text else ""
     niche_line = f"Content niche: {niche}." if niche else ""
-    character_line = (
-        f"Main character (keep IDENTICAL in every scene): {character}." if character else ""
-    )
     if render_mode == "mode_2":
         shape = (
             '  {"scene_text": str, "emotion": str, "action": str, "environment": str, '
@@ -69,7 +66,7 @@ def _user_prompt(script: str, niche: str, style: str, n_scenes: int, render_mode
         note = "Each scene has a single detailed image_prompt."
 
     return (
-        f"{style_line} {niche_line} {character_line}\n\n"
+        f"{style_line} {niche_line}\n\n"
         f"Split this script into EXACTLY {n_scenes} sequential scenes that together "
         f"cover the whole script in order. Assign each scene the portion of the "
         f"narration it illustrates (scene_text). {note}\n\n"
@@ -81,13 +78,12 @@ def _user_prompt(script: str, niche: str, style: str, n_scenes: int, render_mode
     )
 
 
-def _decorate(prompt: str, style: str, character: str = "") -> str:
-    """Prepend the fixed character description (best-effort identity lock) and
-    append the style suffix, keeping prompts SDXL-friendly."""
+def _decorate(prompt: str, style_text: str) -> str:
+    """Prepend the chosen style STRONGLY (so the whole video shares one look) and
+    append quality boosters. Style is enforced at the front of every prompt."""
     p = (prompt or "").strip().rstrip(".")
-    char = f"{character.strip().rstrip('.')}. " if character else ""
-    extra = f", {style}" if style else ""
-    return f"{char}{p}{extra}, {_STYLE_SUFFIX}"
+    prefix = f"{style_text.strip().rstrip('.')}. " if style_text else ""
+    return f"{prefix}{p}, {_STYLE_SUFFIX}"
 
 
 async def breakdown_script(
@@ -96,7 +92,6 @@ async def breakdown_script(
     render_mode: str = "mode_1",
     niche: str = "",
     style: str = "",
-    character_desc: str = "",
     duration_seconds: int = 60,
     scene_duration: int | None = None,
 ) -> list[dict]:
@@ -107,12 +102,13 @@ async def breakdown_script(
     """
     scene_dur = scene_duration or settings.scene_duration_seconds
     n_scenes = target_scene_count(duration_seconds, scene_dur)
+    style_text = style_prompt(style)  # strong style descriptor for this style id
 
     response = await _client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": _system_prompt(render_mode)},
-            {"role": "user", "content": _user_prompt(script, niche, style, n_scenes, render_mode, character_desc)},
+            {"role": "user", "content": _user_prompt(script, niche, style_text, n_scenes, render_mode)},
         ],
         temperature=0.6,
         response_format={"type": "json_object"},
@@ -122,7 +118,7 @@ async def breakdown_script(
 
     scenes: list[dict] = []
     for i, s in enumerate(raw_scenes):
-        base_prompt = _decorate(s.get("image_prompt", ""), style, character_desc)
+        base_prompt = _decorate(s.get("image_prompt", ""), style_text)
         scene: dict = {
             "idx": i,
             "scene_text": (s.get("scene_text") or "").strip(),
@@ -135,7 +131,7 @@ async def breakdown_script(
         if render_mode == "mode_2":
             progressive = s.get("image_prompts") or []
             # Pad/repair to exactly 3 prompts so the renderer always has A/B/C.
-            progressive = [(_decorate(p, style, character_desc)) for p in progressive if p][:3]
+            progressive = [(_decorate(p, style_text)) for p in progressive if p][:3]
             while len(progressive) < 3:
                 progressive.append(base_prompt)
             scene["image_prompts"] = progressive

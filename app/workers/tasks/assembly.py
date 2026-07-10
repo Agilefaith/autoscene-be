@@ -35,7 +35,8 @@ def _download(url: str, dest: str) -> None:
             f.write(resp.content)
 
 
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=45, queue="media")
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=45, queue="media",
+                 soft_time_limit=2400, time_limit=2700)
 def assemble_task(self, project_id: str):
     if is_cancelled(project_id):
         return

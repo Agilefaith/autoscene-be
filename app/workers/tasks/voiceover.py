@@ -75,19 +75,23 @@ def generate_voiceover_task(self, project_id: str):
         key = f"projects/{project['user_id']}/{project['id']}/voiceover.mp3"
         voiceover_url = upload_bytes(audio, key, "audio/mpeg")
 
-        # Distribute audio length evenly across scenes (synced visual timeline).
+        # Sync visuals to narration: each scene's on-screen time is PROPORTIONAL to
+        # how much narration it carries (word count of its scene_text), not an equal
+        # split. A scene with a longer line stays up longer, so the image matches the
+        # words being spoken at that moment.
         scenes = get_scenes(project_id)
-        n = max(1, len(scenes))
-        per_scene = max(_MIN_SCENE_SECONDS, round(audio_seconds / n, 2))
-        for s in scenes:
+        weights = [max(1, len((s.get("scene_text") or "").split())) for s in scenes]
+        total_w = sum(weights) or 1
+        for s, w in zip(scenes, weights):
+            dur = max(_MIN_SCENE_SECONDS, round(audio_seconds * w / total_w, 2))
             client.table("scenes").update(
-                {"duration_seconds": per_scene}
+                {"duration_seconds": dur}
             ).eq("id", s["id"]).execute()
 
         update_project(project_id, {"voiceover_url": voiceover_url, "status": "rendering_scenes"})
         log_event(project_id, "voiceover", "completed",
                   int((time.time() - start) * 1000),
-                  {"audio_seconds": round(audio_seconds, 2), "per_scene": per_scene})
+                  {"audio_seconds": round(audio_seconds, 2), "scenes": len(scenes)})
 
         from app.workers.tasks.scene_render import render_scenes_task
         render_scenes_task.apply_async(args=[project_id], queue="media")

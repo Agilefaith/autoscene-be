@@ -66,7 +66,15 @@ class Settings(BaseSettings):
     # cost + latency lever in the pipeline). Config-driven so it stays swappable.
     elevenlabs_model: str = "eleven_flash_v2_5"
 
-    # ── Stability AI (SDXL) — AutoScene image generation (Mode 1 & 2) ──────────
+    # ── Image provider (config-driven; Gemini primary, Stability fallback) ─────
+    # "gemini" (Google Nano Banana): native character consistency from a reference
+    # image + high style fidelity (Ghibli/Family Guy). "stability": SDXL fallback.
+    image_provider: str = "gemini"
+    google_ai_api_key: str = ""                # Faith's Google AI Studio key (.env only)
+    gemini_image_model: str = "gemini-2.5-flash-image"
+    gemini_http_timeout_seconds: int = 120
+
+    # ── Stability AI (SDXL) — fallback image engine ────────────────────────────
     # Verified live 2026-06-27. Engine list returns only stable-diffusion-xl-1024-v1-0.
     stability_api_key: str = ""
     stability_api_host: str = "https://api.stability.ai"
@@ -110,7 +118,7 @@ class Settings(BaseSettings):
     mode_2_credit_multiplier: int = 3          # internal cost metric only
 
     # ── AutoScene scene defaults (config-driven) ──────────────────────────────
-    scene_duration_seconds: int = 15          # ~15s scenes (≈120 images / 30 min)
+    scene_duration_seconds: int = 10          # PRD / Faith: split script into ~10s scenes
     scene_min_count: int = 1
     scene_max_count: int = 240                 # supports up to 40-min videos
     scene_render_fps: int = 30

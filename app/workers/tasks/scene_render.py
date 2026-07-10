@@ -73,7 +73,8 @@ def _render_one(scene: dict, project: dict, tmpdir: str, tail: float = 0.0) -> s
     return upload_video(clip_path, key)
 
 
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=45, queue="media")
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=45, queue="media",
+                 soft_time_limit=2400, time_limit=2700)
 def render_scenes_task(self, project_id: str):
     if is_cancelled(project_id):
         return

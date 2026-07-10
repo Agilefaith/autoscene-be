@@ -9,7 +9,7 @@ class ScriptGenerateRequest(BaseModel):
     target_audience: str
     tone: str
     goal: Literal["sales", "engagement", "education", "storytelling"]
-    style: Literal["ugc", "ad", "tiktok_hook", "documentary", "ai_influencer"]
+    style: Literal["storytelling", "educational", "documentary", "punchy", "conversational"]
     # Content niche (e.g. "Bible storytelling") — shapes the script's subject and voice.
     niche: str = ""
     # Drives script length so AI scripts fit the intended video duration.

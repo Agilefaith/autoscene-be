@@ -124,12 +124,12 @@ async def test_generate_script_injects_style_goal_tone_guidance():
     with patch.object(svc._client.chat.completions, "create", side_effect=fake_create):
         await svc.generate_script(
             title="T", product_name="P", target_audience="A",
-            tone="energetic", goal="education", style="tiktok_hook",
+            tone="energetic", goal="education", style="punchy",
             target_duration_seconds=30,
         )
 
     u = captured["user"]
-    assert svc.STYLE_GUIDANCE["tiktok_hook"] in u
+    assert svc.STYLE_GUIDANCE["punchy"] in u
     assert svc.GOAL_GUIDANCE["education"] in u
     assert svc.TONE_GUIDANCE["energetic"] in u
 
