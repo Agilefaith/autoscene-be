@@ -1,27 +1,22 @@
 """Google Gemini (Nano Banana) image generation — AutoScene primary engine.
 
-Generates a scene image from a text prompt and, when provided, a reference image
-so the same character stays consistent across scenes. Gemini also renders the
-selected art style (Stickman / Cartoon / Ghibli / Family Guy) at high fidelity,
-which SDXL cannot. Returns raw image bytes to match stability.generate_image.
+Calls the Gemini REST API directly via httpx (no google-genai SDK) to avoid an
+httpx version conflict with supabase. Generates a scene image from a text prompt
+and, when provided, a reference image so the same character stays consistent
+across scenes. Gemini also renders the selected art style (Stickman / Cartoon /
+Ghibli / Family Guy) at high fidelity. Returns raw image bytes to match
+stability.generate_image (FFmpeg later scales/crops to the exact canvas).
 """
 
-from functools import lru_cache
+import base64
 
-from google import genai
-from google.genai import types
+import httpx
 
 from app.core.config import get_settings
 
 settings = get_settings()
 
-# Our formats map 1:1 to Gemini's native aspect ratios (no letterbox needed).
-_ASPECT = {"16:9": "16:9", "9:16": "9:16", "1:1": "1:1"}
-
-
-@lru_cache
-def _client() -> genai.Client:
-    return genai.Client(api_key=settings.google_ai_api_key)
+_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
 def generate_image_gemini(
@@ -31,27 +26,40 @@ def generate_image_gemini(
     reference_bytes: bytes | None = None,
     reference_mime: str = "image/png",
 ) -> bytes:
-    """Generate one image via Gemini. If reference_bytes is given, the subject in
-    the reference is kept consistent. Raises on failure (caller may fall back)."""
-    contents: list = [prompt]
+    """Generate one image via Gemini (synchronous; called from a worker thread).
+    If reference_bytes is given, the subject in the reference is kept consistent.
+    Raises on failure so the caller can fall back to Stability."""
+    parts: list = [{"text": prompt}]
     if reference_bytes:
-        contents.append(types.Part.from_bytes(data=reference_bytes, mime_type=reference_mime))
+        parts.append({
+            "inline_data": {
+                "mime_type": reference_mime,
+                "data": base64.b64encode(reference_bytes).decode(),
+            }
+        })
 
-    config = types.GenerateContentConfig(
-        response_modalities=["IMAGE"],
-        image_config=types.ImageConfig(aspect_ratio=_ASPECT.get(fmt, "9:16")),
-    )
-    resp = _client().models.generate_content(
-        model=settings.gemini_image_model,
-        contents=contents,
-        config=config,
-    )
+    body = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {"responseModalities": ["IMAGE"]},
+    }
+    url = f"{_BASE}/{settings.gemini_image_model}:generateContent"
 
-    candidates = getattr(resp, "candidates", None) or []
-    for cand in candidates:
-        parts = getattr(getattr(cand, "content", None), "parts", None) or []
-        for part in parts:
-            inline = getattr(part, "inline_data", None)
-            if inline and getattr(inline, "data", None):
-                return inline.data
-    raise RuntimeError(f"Gemini returned no image (model={settings.gemini_image_model})")
+    with httpx.Client(timeout=settings.stability_http_timeout_seconds) as client:
+        resp = client.post(
+            url,
+            params={"key": settings.google_ai_api_key},
+            headers={"Content-Type": "application/json"},
+            json=body,
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:300]}")
+
+    data = resp.json()
+    for cand in data.get("candidates", []) or []:
+        for part in ((cand.get("content") or {}).get("parts") or []):
+            inline = part.get("inlineData") or part.get("inline_data")
+            if inline and inline.get("data"):
+                return base64.b64decode(inline["data"])
+    raise RuntimeError(
+        f"Gemini returned no image (model={settings.gemini_image_model}): {str(data)[:300]}"
+    )

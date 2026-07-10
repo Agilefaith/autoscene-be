@@ -19,8 +19,9 @@ kombu==5.4.2
 
 # ─── AI / External APIs ───────────────────────────────────────────────────────
 openai==1.57.2
-google-genai>=1.20.0
-httpx>=0.28.1,<0.29   # 0.28.1 satisfies both supabase 2.10 and google-genai
+# Gemini (Nano Banana) is called via its REST API using httpx (below) — no SDK,
+# so there is no httpx version conflict with supabase.
+httpx>=0.26,<0.28
 
 # ─── Storage ──────────────────────────────────────────────────────────────────
 boto3==1.35.87
