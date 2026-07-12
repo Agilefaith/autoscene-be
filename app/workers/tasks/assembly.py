@@ -92,6 +92,7 @@ def assemble_task(self, project_id: str):
                 "font_size": project.get("subtitle_size", 24),
                 "placement": project.get("subtitle_position", "bottom"),
                 "font_style": project.get("subtitle_font", "bold"),
+                "format": project.get("format", "9:16"),
             }
             subtitles_burned = _burn_subtitles(
                 muxed_path, final_path, transcription.get("segments", []), style

@@ -117,10 +117,28 @@ class Settings(BaseSettings):
     mode_1_credit_multiplier: int = 1
     mode_2_credit_multiplier: int = 3          # internal cost metric only
 
+    # ── Script generation (config-driven) ─────────────────────────────────────
+    # Spoken delivery rate: sizes generated scripts AND estimates how long an
+    # arbitrary script reads aloud. Single source of truth for WPM.
+    script_words_per_minute: int = 130
+    script_gen_model: str = "gpt-4o-mini"
+    # Above this target duration a single completion can't reliably fill the word
+    # count, so generation switches to an outline→expand multi-call strategy.
+    script_chunk_threshold_seconds: int = 180
+    # Approx words each expanded section (beat) targets in the multi-call path.
+    script_words_per_section: int = 220
+    # Max follow-up "continue" calls when the assembled script is under the floor.
+    script_max_floor_iterations: int = 2
+
     # ── AutoScene scene defaults (config-driven) ──────────────────────────────
     scene_duration_seconds: int = 10          # PRD / Faith: split script into ~10s scenes
     scene_min_count: int = 1
     scene_max_count: int = 240                 # supports up to 40-min videos
+    # Max scenes requested per OpenAI breakdown call. Long scripts are split into
+    # several chunks so one response never overflows the model's output-token cap
+    # (which truncates the JSON → "Unterminated string" parse failure). Mode 2
+    # emits 3 prompts/scene, so its effective batch is halved (see scene_engine).
+    scene_breakdown_batch: int = 40
     scene_render_fps: int = 30
     scene_crossfade_seconds: float = 0.6       # Mode 2 crossfade between A/B/C
     max_video_seconds: int = 2400              # hard ceiling (40 min)

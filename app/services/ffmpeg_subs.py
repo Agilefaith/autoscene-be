@@ -9,6 +9,8 @@ import os
 import shutil
 import subprocess
 
+from app.schemas.common import RENDER_DIMENSIONS
+
 # Final subtitle-burn encode. veryfast keeps long videos fast; crf 20 stays HD.
 X264_QUALITY = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
 
@@ -76,15 +78,23 @@ def _burn_subtitles(input_path: str, output_path: str, words: list[dict], style:
         placement = style.get("placement", "bottom")
         alignment = 2 if placement == "bottom" else (5 if placement == "center" else 8)
         font_style = style.get("font_style", "bold")
-        font_name = {"serif": "Georgia", "mono": "Courier New"}.get(font_style, "Arial")
+        # Map to font families that actually ship in the image (fonts-liberation):
+        # "Georgia"/"Courier New" are not bundled, so libass silently substituted a
+        # default. Liberation Serif/Mono resolve reliably; Arial aliases to Liberation Sans.
+        font_name = {"serif": "Liberation Serif", "mono": "Liberation Mono"}.get(font_style, "Arial")
         bold = 1 if font_style == "bold" else 0
         italic = 1 if font_style == "italic" else 0
+        # Anchor FontSize to the real output canvas — without PlayResX/PlayResY,
+        # libass falls back to its own default script resolution and stretches it
+        # to fill the frame, inflating the rendered text far beyond `size`.
+        play_w, play_h = RENDER_DIMENSIONS.get(style.get("format", "9:16"), (1080, 1920))
 
         # BorderStyle=1 (outline + drop shadow), thick black outline → readable anywhere.
         force_style = (
             f"FontName={font_name},FontSize={size},PrimaryColour={primary},"
             f"OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1,"
-            f"Alignment={alignment},MarginV=40,Bold={bold},Italic={italic}"
+            f"Alignment={alignment},MarginV=40,Bold={bold},Italic={italic},"
+            f"PlayResX={play_w},PlayResY={play_h}"
         )
         vf = f"subtitles={srt_path}:force_style='{force_style}'"
 

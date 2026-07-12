@@ -40,7 +40,10 @@ def generate_image_gemini(
 
     body = {
         "contents": [{"parts": parts}],
-        "generationConfig": {"responseModalities": ["IMAGE"]},
+        "generationConfig": {
+            "responseModalities": ["IMAGE"],
+            "imageConfig": {"aspectRatio": fmt},
+        },
     }
     url = f"{_BASE}/{settings.gemini_image_model}:generateContent"
 

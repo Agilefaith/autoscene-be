@@ -8,7 +8,7 @@ from app.schemas.script import (
     ScriptResponse,
 )
 from app.services.supabase import get_supabase_client
-from app.services.openai_service import generate_script
+from app.services.openai_service import generate_script, estimate_duration_seconds
 import uuid
 
 router = APIRouter(prefix="/scripts", tags=["scripts"])
@@ -40,11 +40,10 @@ async def generate_script_endpoint(body: ScriptGenerateRequest, _user_id: Curren
         target_duration_seconds=body.target_duration_seconds,
     )
     word_count = len(content.split())
-    estimated_secs = int((word_count / 130) * 60)
     return ScriptGenerateResponse(
         content=content,
         word_count=word_count,
-        estimated_duration_seconds=estimated_secs,
+        estimated_duration_seconds=estimate_duration_seconds(content),
     )
 
 
@@ -61,7 +60,7 @@ async def save_script(body: ScriptSaveRequest, user_id: CurrentUserId):
         "is_locked": body.mode == "custom",
         "product_name": body.product_name,
         "tone": body.tone,
-        "audience": body.target_audience,
+        "target_audience": body.target_audience,
         "goal": body.goal,
         "style": body.style,
         "niche": body.niche,

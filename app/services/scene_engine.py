@@ -8,8 +8,10 @@ This is the "one brain" that drives both modes — the same scene analysis, two
 prompt shapes.
 """
 
+import asyncio
 import json
 import math
+import re
 
 from openai import AsyncOpenAI
 
@@ -78,6 +80,70 @@ def _user_prompt(script: str, niche: str, style_text: str, n_scenes: int, render
     )
 
 
+def _split_script(script: str, parts: int) -> list[str]:
+    """Split a script into `parts` roughly-equal chunks on sentence boundaries, so
+    each chunk can be broken down in its own OpenAI call. Never splits mid-sentence."""
+    text = script.strip()
+    if parts <= 1:
+        return [text]
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    target = (sum(len(s) for s in sentences) or 1) / parts
+    chunks: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for s in sentences:
+        cur.append(s)
+        cur_len += len(s)
+        if cur_len >= target and len(chunks) < parts - 1:
+            chunks.append(" ".join(cur))
+            cur, cur_len = [], 0
+    if cur:
+        chunks.append(" ".join(cur))
+    return chunks or [text]
+
+
+def _distribute_counts(total: int, chunks: list[str]) -> list[int]:
+    """Split `total` target scenes across chunks proportional to their length, with
+    at least 1 per chunk and summing exactly to `total`."""
+    lengths = [len(c) for c in chunks]
+    tot = sum(lengths) or 1
+    counts = [max(1, round(total * length / tot)) for length in lengths]
+    i = 0
+    while sum(counts) != total and counts:
+        j = i % len(counts)
+        if sum(counts) < total:
+            counts[j] += 1
+        elif counts[j] > 1:
+            counts[j] -= 1
+        i += 1
+    return counts
+
+
+async def _breakdown_chunk(
+    script_chunk: str,
+    n_scenes: int,
+    *,
+    render_mode: str,
+    niche: str,
+    style_text: str,
+) -> list[dict]:
+    """One OpenAI call: break a single script chunk into exactly `n_scenes` raw
+    scene dicts. `max_tokens` is capped and the batch is bounded by the caller so a
+    response never overflows the model's output limit and truncates the JSON."""
+    response = await _client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": _system_prompt(render_mode)},
+            {"role": "user", "content": _user_prompt(script_chunk, niche, style_text, n_scenes, render_mode)},
+        ],
+        temperature=0.6,
+        max_tokens=16000,
+        response_format={"type": "json_object"},
+    )
+    data = json.loads(response.choices[0].message.content or "{}")
+    return data.get("scenes") or []
+
+
 def _decorate(prompt: str, style_text: str) -> str:
     """Prepend the chosen style STRONGLY (so the whole video shares one look) and
     append quality boosters. Style is enforced at the front of every prompt."""
@@ -104,17 +170,26 @@ async def breakdown_script(
     n_scenes = target_scene_count(duration_seconds, scene_dur)
     style_text = style_prompt(style)  # strong style descriptor for this style id
 
-    response = await _client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": _system_prompt(render_mode)},
-            {"role": "user", "content": _user_prompt(script, niche, style_text, n_scenes, render_mode)},
-        ],
-        temperature=0.6,
-        response_format={"type": "json_object"},
-    )
-    data = json.loads(response.choices[0].message.content or "{}")
-    raw_scenes = data.get("scenes") or []
+    # Bound scenes-per-call so one response never overflows the model's output-token
+    # cap (which truncates the JSON mid-string). Long scripts are split into several
+    # chunks, each broken down in its own call, then merged and re-indexed. Mode 2
+    # emits 3 prompts/scene, so it packs fewer scenes per call.
+    per_call = settings.scene_breakdown_batch
+    if render_mode == "mode_2":
+        per_call = max(1, per_call // 2)
+    n_batches = max(1, math.ceil(n_scenes / per_call))
+
+    if n_batches == 1:
+        chunks, counts = [script.strip()], [n_scenes]
+    else:
+        chunks = _split_script(script, n_batches)
+        counts = _distribute_counts(n_scenes, chunks)
+
+    batches = await asyncio.gather(*(
+        _breakdown_chunk(chunk, cnt, render_mode=render_mode, niche=niche, style_text=style_text)
+        for chunk, cnt in zip(chunks, counts)
+    ))
+    raw_scenes = [s for batch in batches for s in batch]
 
     scenes: list[dict] = []
     for i, s in enumerate(raw_scenes):
