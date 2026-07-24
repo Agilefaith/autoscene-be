@@ -224,5 +224,5 @@ class SubtitleSettings(BaseModel):
     enabled: bool = True
     font_color: str = "#FFFFFF"
     font_style: Literal["sans", "serif", "mono", "bold", "italic"] = "bold"
-    font_size: int = 24
+    font_size: int = 84
     placement: Literal["top", "center", "bottom"] = "bottom"
