@@ -58,6 +58,8 @@ def assemble_task(self, project_id: str):
             raise RuntimeError("No rendered scene clips to assemble")
 
         # 1) Stitch scene clips in order (crossfade when enabled for this count).
+        # Transition type varies per pair by the incoming scene's emotion, and the
+        # per-style grade pass rides the same encode (both config-driven).
         local_clips: list[str] = []
         for i, url in enumerate(clip_urls):
             p = os.path.join(tmpdir, f"clip_{i:03d}.mp4")
@@ -65,10 +67,27 @@ def assemble_task(self, project_id: str):
             local_clips.append(p)
         from app.core.config import get_settings
         _s = get_settings()
-        _trans = _s.scene_transition if _s.scene_transitions_on(len(local_clips)) else ""
+        transitions: list[str] | None = None
+        grade = ""
+        if _s.scene_transitions_on(len(local_clips)):
+            if _s.scene_transition_variety:
+                import random
+                from app.schemas.common import transition_for_emotion
+                rng = random.Random(project_id)  # deterministic per project
+                with_clips = [s for s in scenes if s.get("clip_url")]
+                transitions = [
+                    transition_for_emotion(s.get("emotion") or "", rng)
+                    for s in with_clips[1:]
+                ]
+            else:
+                transitions = [_s.scene_transition]
+            if _s.scene_style_grade:
+                from app.schemas.common import grade_filter
+                grade = grade_filter(project.get("style") or "", project.get("niche") or "")
         ffmpeg_scene.concat_scene_clips(
             local_clips, silent_path,
-            transition=_trans, trans_seconds=_s.scene_transition_seconds,
+            transitions=transitions, trans_seconds=_s.scene_transition_seconds,
+            grade=grade,
         )
 
         # 2) Mux the voiceover onto the stitched timeline.

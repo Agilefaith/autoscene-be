@@ -31,9 +31,10 @@ def _frames(duration: float, fps: int) -> int:
 
 
 def _motion_filter(motion: str, w: int, h: int, duration: float, fps: int) -> str:
-    """Build the scale→crop→zoompan filtergraph for one still image."""
+    """Build the scale→crop→(rotate→)zoompan filtergraph for one still image."""
     n = _frames(duration, fps)
     wu, hu = w * _UPSCALE, h * _UPSCALE
+    pre = ""  # optional filter stage between the upscale and zoompan
 
     # progress p = on/n ∈ [0,1]; all expressions stay in-bounds (no min/max needed).
     if motion == "zoom_in":
@@ -68,6 +69,33 @@ def _motion_filter(motion: str, w: int, h: int, duration: float, fps: int) -> st
         z = f"1+{_ZOOM_DELTA}*on/{n}"
         x = "iw-iw/zoom"
         y = "ih-ih/zoom"
+    elif motion == "zoom_out_tl":  # diagonal pull-back from the top-left
+        z = f"{1 + _ZOOM_DELTA}-{_ZOOM_DELTA}*on/{n}"
+        x = "0"
+        y = "0"
+    elif motion == "zoom_out_br":  # diagonal pull-back from the bottom-right
+        z = f"{1 + _ZOOM_DELTA}-{_ZOOM_DELTA}*on/{n}"
+        x = "iw-iw/zoom"
+        y = "ih-ih/zoom"
+    elif motion == "slow_drift":  # documentary micro-drift: near-still with a slow lateral glide
+        z = "1.08"
+        x = f"(iw-iw/zoom)*(0.25+0.5*on/{n})"
+        y = "ih/2-(ih/zoom/2)"
+    elif motion == "crane_up":    # crane: pull back while the frame rises
+        z = f"{1 + _ZOOM_DELTA}-{_ZOOM_DELTA}*on/{n}"
+        x = "iw/2-(iw/zoom/2)"
+        y = f"(ih-ih/zoom)*(1-on/{n})"
+    elif motion == "pulse_in":    # breathing push: eases in and settles back (half sine)
+        z = f"1+0.1*sin(PI*on/{n})"
+        x = "iw/2-(iw/zoom/2)"
+        y = "ih/2-(ih/zoom/2)"
+    elif motion == "rotate_zoom":  # subtle handheld rotation under a constant zoom
+        # ~0.26°/s — at the working zoom of 1.12 the crop window stays inside the
+        # rotated frame for small angles, so no black corners appear.
+        pre = "rotate=a='0.0045*t':c=black@0,"
+        z = f"{_PAN_ZOOM}"
+        x = "iw/2-(iw/zoom/2)"
+        y = "ih/2-(ih/zoom/2)"
     else:  # zoom_pan (default / combined)
         z = f"1+{_ZOOMPAN_ZOOM}*on/{n}"
         x = f"(iw-iw/zoom)*on/{n}"
@@ -77,6 +105,7 @@ def _motion_filter(motion: str, w: int, h: int, duration: float, fps: int) -> st
         f"scale={w}:{h}:force_original_aspect_ratio=increase,"
         f"crop={w}:{h},"
         f"scale={wu}:{hu},"
+        f"{pre}"
         f"zoompan=z='{z}':x='{x}':y='{y}':d={n}:s={w}x{h}:fps={fps},"
         f"format=yuv420p,setsar=1"
     )
@@ -153,19 +182,30 @@ def render_scene_clip(
 
 
 def concat_scene_clips(clip_paths: list[str], out_path: str,
-                       *, transition: str = "", trans_seconds: float = 0.4) -> None:
+                       *, transitions: list[str] | None = None,
+                       trans_seconds: float = 0.4, grade: str = "") -> None:
     """Concatenate rendered scene clips into one silent video.
 
-    Hard cuts by default (concat demuxer — fast, exact length). When `transition`
-    is set, consecutive scenes are joined with an xfade of `trans_seconds`. Clips
-    must have been rendered `trans_seconds` longer per scene (see scene_render) so
-    the crossfades consume the extra tail and the total timeline stays synced.
+    Hard cuts by default (concat demuxer — fast, exact length). When `transitions`
+    is set (one xfade type per scene PAIR, so len == n_clips - 1; a single-element
+    list is broadcast), consecutive scenes are joined with xfades of
+    `trans_seconds`. Clips must have been rendered `trans_seconds` longer per
+    scene (see scene_render) so the crossfades consume the extra tail and the
+    total timeline stays synced.
+
+    `grade` is an optional FFmpeg filter chain (vignette/grain/eq — see
+    schemas.common.grade_filter) applied to the stitched timeline. It rides the
+    xfade encode for free, so it only applies on the transition path — the
+    hard-cut path is a stream copy and stays untouched (long videos skip
+    transitions for speed anyway).
     """
     if not clip_paths:
         raise ValueError("concat_scene_clips requires at least one clip")
 
-    if transition and len(clip_paths) > 1:
-        _concat_with_xfade(clip_paths, out_path, transition, trans_seconds)
+    if transitions and len(clip_paths) > 1:
+        pairs = len(clip_paths) - 1
+        tlist = (transitions * pairs)[:pairs] if len(transitions) < pairs else transitions[:pairs]
+        _concat_with_xfade(clip_paths, out_path, tlist, trans_seconds, grade)
         return
 
     tmpdir = tempfile.mkdtemp()
@@ -187,8 +227,9 @@ def concat_scene_clips(clip_paths: list[str], out_path: str,
 
 
 def _concat_with_xfade(clip_paths: list[str], out_path: str,
-                       transition: str, t: float) -> None:
-    """Chain xfade transitions across all clips in one encode."""
+                       transitions: list[str], t: float, grade: str = "") -> None:
+    """Chain xfade transitions (one type per pair) across all clips in one
+    encode, optionally finishing with a style-grade filter chain."""
     durations = [probe_duration(p) for p in clip_paths]
     inputs: list[str] = []
     for p in clip_paths:
@@ -203,15 +244,21 @@ def _concat_with_xfade(clip_paths: list[str], out_path: str,
     for i in range(1, len(clip_paths)):
         off = max(0.0, cum - t)
         out_label = f"[v{i}]" if i < last else "[vout]"
+        trans = transitions[i - 1] if i - 1 < len(transitions) else "fade"
         chain.append(
-            f"{prev}[{i}:v]xfade=transition={transition}:duration={t:.3f}:offset={off:.3f}{out_label}"
+            f"{prev}[{i}:v]xfade=transition={trans}:duration={t:.3f}:offset={off:.3f}{out_label}"
         )
         prev = out_label
         cum += durations[i] - t
 
+    map_label = "[vout]"
+    if grade:
+        chain.append(f"[vout]{grade}[vfinal]")
+        map_label = "[vfinal]"
+
     subprocess.run(
         ["ffmpeg", "-y", *inputs,
-         "-filter_complex", ";".join(chain), "-map", "[vout]",
+         "-filter_complex", ";".join(chain), "-map", map_label,
          *SCENE_ENCODE, out_path],
         check=True, capture_output=True, timeout=1800,
     )

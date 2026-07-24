@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     supabase_jwt_secret: str
     supabase_anon_key: str
 
+    # ── At-rest encryption (per-user voice API keys) ──────────────────────────
+    # Optional: when empty, the Fernet key is derived from supabase_jwt_secret
+    # (see app/services/crypto.py). Set explicitly to rotate independently.
+    app_encryption_key: str = ""
+
     # ── Redis / Celery ────────────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
 
@@ -152,6 +157,13 @@ class Settings(BaseSettings):
     scene_transition: str = "fade"             # fade | fadeblack | slideleft | ...
     scene_transition_seconds: float = 0.4
     scene_transition_max_scenes: int = 40
+    # Vary the transition per scene pair by the incoming scene's emotion (see
+    # schemas.common.transition_for_emotion). False = always scene_transition.
+    scene_transition_variety: bool = True
+    # Apply the per-style/niche grade pass (vignette/grain/eq — see
+    # schemas.common.grade_filter) on the stitched timeline. Rides the xfade
+    # encode, so it only applies when transitions are on.
+    scene_style_grade: bool = True
 
     # ── Rate limiting (per user, by plan tier) ────────────────────────────────
     # Requests/min to /projects/{id}/generate, and max simultaneously-active jobs.
