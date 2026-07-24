@@ -5,7 +5,7 @@ import sentry_sdk
 
 from app.core.config import get_settings
 from app.api.routes import (
-    auth, scripts, voices, campaigns, billing, projects, scenes, uploads,
+    auth, scripts, voices, campaigns, billing, projects, scenes, uploads, thumbnails,
 )
 
 settings = get_settings()
@@ -50,6 +50,7 @@ app.include_router(billing.router, prefix=PREFIX)
 app.include_router(projects.router, prefix=PREFIX)
 app.include_router(scenes.router, prefix=PREFIX)
 app.include_router(uploads.router, prefix=PREFIX)
+app.include_router(thumbnails.router, prefix=PREFIX)
 
 
 @app.get("/health")

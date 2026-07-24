@@ -15,6 +15,7 @@ celery_app = Celery(
         "app.workers.tasks.voiceover",
         "app.workers.tasks.scene_render",
         "app.workers.tasks.assembly",
+        "app.workers.tasks.thumbnails",
     ],
 )
 
@@ -56,6 +57,7 @@ celery_app.conf.update(
         "app.workers.tasks.voiceover.*": {"queue": "media"},
         "app.workers.tasks.scene_render.*": {"queue": "media"},
         "app.workers.tasks.assembly.*": {"queue": "media"},
+        "app.workers.tasks.thumbnails.*": {"queue": "media"},
     },
     # Retry policy defaults
     task_max_retries=3,
