@@ -14,9 +14,9 @@ from app.core.celery_app import celery_app
 from app.core.config import get_settings
 from app.services.supabase import get_supabase_client
 from app.services.stability import generate_image, ContentFilteredError
-from app.services.gemini_image import generate_image_gemini
+from app.services.gemini_image import generate_image_gemini, GeminiCreditsDepletedError
 from app.services.backblaze import upload_bytes
-from app.schemas.common import style_sdxl_preset
+from app.schemas.common import style_sdxl_preset, style_negative
 from app.workers.tasks.project_common import (
     log_event, update_project, get_project, get_scenes, friendly_error,
     is_cancelled, refund_on_final_failure,
@@ -52,60 +52,104 @@ def _fetch_reference(url: str | None) -> bytes | None:
         return None
 
 
+def _fetch_cast(project: dict) -> list[tuple[str, bytes]]:
+    """Download every named character's reference image once per render, so each
+    generated scene can be conditioned on the whole cast. Falls back to the
+    legacy single `reference_image_url` for pre-2026-07-21 projects."""
+    characters = [c for c in (project.get("characters") or []) if c.get("image_url")]
+    if not characters and project.get("reference_image_url"):
+        characters = [{"name": "", "image_url": project["reference_image_url"]}]
+    cast: list[tuple[str, bytes]] = []
+    for c in characters:
+        data = _fetch_reference(c["image_url"])
+        if data:
+            cast.append((c.get("name") or "", data))
+    return cast
+
+
 async def _gen_one(prompt: str, fmt: str, sdxl_preset: str | None, seed: int,
-                   ref_bytes: bytes | None) -> bytes:
-    """Generate one image. Gemini is primary (character lock via the reference +
-    high style fidelity); Stability SDXL is the fallback. Style is already baked
-    into the prompt, so Gemini needs no preset."""
+                   cast: list[tuple[str, bytes]],
+                   negative: str | None = None) -> tuple[bytes, str, str | None]:
+    """Generate one image. Gemini is primary (character lock via the cast's
+    reference images + high style fidelity); Stability SDXL is the fallback.
+    Style is already baked into the prompt, so Gemini needs no preset.
+
+    Returns (image_bytes, engine, fallback_reason). Depleted Gemini credits do
+    NOT fall back — every image would silently degrade (no reference, weaker
+    style), so the render fails loudly instead."""
+    fallback_reason: str | None = None
     if settings.image_provider == "gemini" and settings.google_ai_api_key:
         try:
-            return await asyncio.to_thread(
-                generate_image_gemini, prompt, fmt, reference_bytes=ref_bytes
+            img = await asyncio.to_thread(
+                generate_image_gemini, prompt, fmt, references=cast
             )
-        except Exception:
-            pass  # fall through to Stability
+            return img, "gemini", None
+        except GeminiCreditsDepletedError:
+            raise
+        except Exception as exc:
+            fallback_reason = str(exc)[:200]  # fall through to Stability
     try:
-        return await generate_image(prompt, fmt, seed=seed, style_preset=sdxl_preset)
+        img = await generate_image(prompt, fmt, seed=seed, style_preset=sdxl_preset,
+                                   negative_prompt=negative)
     except ContentFilteredError:
-        return await generate_image(prompt, fmt, seed=seed + 7, style_preset=sdxl_preset)
+        img = await generate_image(prompt, fmt, seed=seed + 7, style_preset=sdxl_preset,
+                                   negative_prompt=negative)
+    return img, "sdxl", fallback_reason
 
 
 async def _generate_scene_images(scene: dict, project: dict, sem: asyncio.Semaphore,
-                                 ref_bytes: bytes | None) -> list[str]:
-    """Generate + upload all images for one scene. Returns the list of public URLs."""
+                                 cast: list[tuple[str, bytes]]) -> tuple[list[str], list[dict]]:
+    """Generate + upload all images for one scene. Returns (public URLs, one
+    {engine, fallback_reason} record per image)."""
     fmt = project["format"]
-    sdxl_preset = style_sdxl_preset(project.get("style") or "")  # only used by the Stability fallback
+    # Preset + negative prompt are only used by the Stability fallback.
+    sdxl_preset = style_sdxl_preset(project.get("style") or "")
+    negative = style_negative(project.get("style") or "")
     seed = int(scene.get("seed") or 0)
     prompts = _prompts_for(scene, project["render_mode"])
 
     urls: list[str] = []
+    engines: list[dict] = []
     for i, prompt in enumerate(prompts):
         async with sem:
-            img = await _gen_one(prompt, fmt, sdxl_preset,
-                                 seed + i if project["render_mode"] == "mode_2" else seed,
-                                 ref_bytes)
+            img, engine, fallback_reason = await _gen_one(
+                prompt, fmt, sdxl_preset,
+                seed + i if project["render_mode"] == "mode_2" else seed,
+                cast, negative)
+        engines.append({"engine": engine, "fallback_reason": fallback_reason})
         key = f"projects/{project['user_id']}/{project['id']}/scene_{scene['idx']:03d}_{i}.png"
         urls.append(upload_bytes(img, key, "image/png"))
-    return urls
+    return urls, engines
 
 
-async def _generate_all(project: dict, scenes: list[dict]) -> dict[str, list[str]]:
+async def _generate_all(project: dict, scenes: list[dict]) -> tuple[dict[str, list[str]], dict]:
+    """Returns (urls per scene id, engine stats). Engine stats:
+    {"gemini": n, "sdxl": n, "fallback_reasons": [up to 3 distinct reasons]}."""
     sem = asyncio.Semaphore(_MAX_CONCURRENCY)
-    ref_bytes = await asyncio.to_thread(_fetch_reference, project.get("reference_image_url"))
+    cast = await asyncio.to_thread(_fetch_cast, project)
     results = await asyncio.gather(
-        *[_generate_scene_images(s, project, sem, ref_bytes) for s in scenes],
+        *[_generate_scene_images(s, project, sem, cast) for s in scenes],
         return_exceptions=True,
     )
     out: dict[str, list[str]] = {}
+    stats: dict = {"gemini": 0, "sdxl": 0, "fallback_reasons": []}
     errors: list[str] = []
     for scene, res in zip(scenes, results):
-        if isinstance(res, Exception):
+        if isinstance(res, GeminiCreditsDepletedError):
+            raise res  # terminal: surface the clear message, don't mask it
+        if isinstance(res, BaseException):
             errors.append(f"scene {scene['idx']}: {res}")
-        else:
-            out[scene["id"]] = res
+            continue
+        urls, engines = res
+        out[scene["id"]] = urls
+        for e in engines:
+            stats[e["engine"]] = stats.get(e["engine"], 0) + 1
+            reason = e.get("fallback_reason")
+            if reason and reason not in stats["fallback_reasons"] and len(stats["fallback_reasons"]) < 3:
+                stats["fallback_reasons"].append(reason)
     if errors:
         raise RuntimeError("; ".join(errors[:5]))
-    return out
+    return out, stats
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=45, queue="media",
@@ -123,13 +167,22 @@ def generate_images_task(self, project_id: str):
         # Only (re)generate scenes that don't yet have images — makes retries cheap.
         scenes = [s for s in get_scenes(project_id) if not s.get("image_urls")]
         n_images = 0
+        engine_stats: dict = {}
         if scenes:
-            urls_by_scene = asyncio.run(_generate_all(project, scenes))
+            urls_by_scene, engine_stats = asyncio.run(_generate_all(project, scenes))
             for scene_id, urls in urls_by_scene.items():
                 n_images += len(urls)
                 client.table("scenes").update(
                     {"image_urls": urls, "status": "image_ready"}
                 ).eq("id", scene_id).execute()
+
+        # A fallback while Gemini is the configured provider means degraded output
+        # (no reference image, weaker style) — make it visible in job_events.
+        if settings.image_provider == "gemini" and engine_stats.get("sdxl"):
+            log_event(project_id, "images", "warning", metadata={
+                "message": "some images fell back to SDXL (no character reference applied)",
+                **engine_stats,
+            })
 
         # Track SDXL spend (biggest variable cost) for cost monitoring.
         from app.services import metrics
@@ -137,11 +190,25 @@ def generate_images_task(self, project_id: str):
                            int((time.time() - start) * 1000), metrics.sdxl_cost(n_images))
         log_event(project_id, "images", "completed",
                   int((time.time() - start) * 1000),
-                  {"scenes": len(scenes), "images": n_images, "mode": project["render_mode"]})
+                  {"scenes": len(scenes), "images": n_images,
+                   "mode": project["render_mode"], **engine_stats})
 
         update_project(project_id, {"status": "voiceover"})
         from app.workers.tasks.voiceover import generate_voiceover_task
         generate_voiceover_task.apply_async(args=[project_id], queue="media")
+
+    except GeminiCreditsDepletedError as exc:
+        # Terminal, not transient: retrying can't help until billing is topped up,
+        # and falling back would silently degrade the whole video.
+        log_event(project_id, "images", "failed",
+                  metadata={"error": str(exc), "reason": "gemini_credits_depleted"})
+        update_project(project_id, {
+            "status": "failed_at_images",
+            "error_message": ("Image generation is paused: the Gemini image credits are "
+                              "depleted. Top up Google AI Studio billing, then retry."),
+        })
+        refund_on_final_failure(project)
+        return
 
     except Exception as exc:
         log_event(project_id, "images", "failed", metadata={"error": str(exc)})
@@ -164,11 +231,17 @@ def regenerate_single_scene(self, scene_id: str):
         return
     try:
         sem = asyncio.Semaphore(_MAX_CONCURRENCY)
-        ref_bytes = _fetch_reference(project.get("reference_image_url"))
-        urls = asyncio.run(_generate_scene_images({**scene, "image_urls": None}, project, sem, ref_bytes))
+        cast = _fetch_cast(project)
+        urls, _ = asyncio.run(_generate_scene_images({**scene, "image_urls": None}, project, sem, cast))
         client.table("scenes").update(
             {"image_urls": urls, "status": "image_ready", "error_message": None}
         ).eq("id", scene_id).execute()
+    except GeminiCreditsDepletedError:
+        client.table("scenes").update(
+            {"status": "failed",
+             "error_message": "Gemini image credits are depleted — top up Google AI Studio billing."}
+        ).eq("id", scene_id).execute()
+        return
     except Exception as exc:
         client.table("scenes").update(
             {"status": "failed", "error_message": str(exc)[:300]}
