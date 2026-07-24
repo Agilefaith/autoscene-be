@@ -74,7 +74,9 @@ def _burn_subtitles(input_path: str, output_path: str, words: list[dict], style:
             f.write("\n".join(srt_lines))
 
         primary = _hex_to_ass(style.get("font_color", "#FFFFFF"))
-        size = style.get("font_size", 26)
+        # Font size is in the render-canvas coordinate space (PlayResY below), so a
+        # readable caption is ~4–6% of height. Default matches SUBTITLE_SIZES "L".
+        size = style.get("font_size") or 84
         placement = style.get("placement", "bottom")
         alignment = 2 if placement == "bottom" else (5 if placement == "center" else 8)
         font_style = style.get("font_style", "bold")

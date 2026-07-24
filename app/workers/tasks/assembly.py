@@ -108,7 +108,7 @@ def assemble_task(self, project_id: str):
             transcription = asyncio.run(transcribe(src))
             style = {
                 "font_color": project.get("subtitle_color", "#FFFFFF"),
-                "font_size": project.get("subtitle_size", 24),
+                "font_size": project.get("subtitle_size") or 84,  # readable default (see SUBTITLE_SIZES)
                 "placement": project.get("subtitle_position", "bottom"),
                 "font_style": project.get("subtitle_font", "bold"),
                 "format": project.get("format", "9:16"),
