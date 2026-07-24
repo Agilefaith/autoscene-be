@@ -35,10 +35,14 @@ def check_request_rate(user_id: str, plan_tier: str) -> bool:
         return True  # Redis down → don't block
 
 
-# Project statuses that count as "in-flight" (mirrors ACTIVE_STATUSES in
-# api/routes/projects.py). Excludes draft (not rendering yet) and terminal states.
+# Project statuses that count as "in-flight" for the concurrency cap. MUST mirror
+# ACTIVE_STATUSES in api/routes/projects.py — in particular it EXCLUDES
+# `scenes_ready`, which is a "waiting for the user" state (breakdown done, not yet
+# generating). Counting it here made the project a user is ABOUT to generate count
+# against itself: a free user (max_concurrent=1) whose project sits at scenes_ready
+# always tripped `active >= 1` at generate time and could never render anything.
 _ACTIVE_PROJECT_STATUSES = [
-    "pending", "scripting", "scene_breakdown", "scenes_ready",
+    "pending", "scripting", "scene_breakdown",
     "generating_images", "rendering_scenes", "voiceover", "assembling",
 ]
 
