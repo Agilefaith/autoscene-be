@@ -24,15 +24,18 @@ from app.workers.tasks.project_common import (
 _MIN_SCENE_SECONDS = 2.0
 
 
-async def _synthesize(provider: str, voice_id: str, text: str) -> bytes:
+async def _synthesize(provider: str, voice_id: str, text: str,
+                      api_key: str | None = None) -> bytes:
+    """`api_key` is the user's own provider key when the voice config carries one
+    (private voices are only reachable with their owner's key)."""
     if provider == "minimax":
         from app.services.minimax import generate_tts_audio as mm_tts
-        audio = await mm_tts(voice_id, text)
+        audio = await mm_tts(voice_id, text, api_key=api_key)
         if not audio:
             raise RuntimeError("Minimax TTS returned no audio")
         return audio
     from app.services.elevenlabs import generate_tts_audio as el_tts
-    return await el_tts(voice_id, text)  # raises with detail on failure
+    return await el_tts(voice_id, text, api_key=api_key)  # raises with detail on failure
 
 
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=45, queue="media")
@@ -52,13 +55,17 @@ def generate_voiceover_task(self, project_id: str):
         )
         text = (script or {}).get("content") or ""
         voice = (
-            client.table("voice_configs").select("provider, voice_id")
+            client.table("voice_configs").select("provider, voice_id, api_key_encrypted")
             .eq("id", project["voice_config_id"]).single().execute().data
         )
         if not voice:
             raise RuntimeError("Voice configuration not found")
 
-        audio = asyncio.run(_synthesize(voice["provider"], voice["voice_id"], text))
+        from app.services.crypto import decrypt
+        audio = asyncio.run(_synthesize(
+            voice["provider"], voice["voice_id"], text,
+            api_key=decrypt(voice.get("api_key_encrypted")),
+        ))
 
         # Probe the real duration to sync the visuals.
         tmpdir = tempfile.mkdtemp()

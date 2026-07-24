@@ -5,8 +5,10 @@ settings = get_settings()
 EL_BASE = "https://api.elevenlabs.io/v1"
 
 
-def _headers() -> dict:
-    return {"xi-api-key": settings.elevenlabs_api_key}
+def _headers(api_key: str | None = None) -> dict:
+    """Auth headers. `api_key` is a user-supplied key (per-user custom voices);
+    falls back to the platform key."""
+    return {"xi-api-key": api_key or settings.elevenlabs_api_key}
 
 
 PRESET_VOICES = [
@@ -32,8 +34,11 @@ async def get_preset_voices() -> list[dict]:
 PREVIEW_TEXT = "Hi! I'm your AI voice assistant, ready to bring your videos to life."
 
 
-async def generate_tts_audio(voice_id: str, text: str) -> bytes:
+async def generate_tts_audio(voice_id: str, text: str, api_key: str | None = None) -> bytes:
     """Generate full TTS audio for the video pipeline. Returns MP3 bytes.
+
+    `api_key` is the user's own ElevenLabs key when the voice config carries one
+    (private voices are only reachable with their owner's key).
 
     Raises with the real status + body on failure (instead of silently returning
     None) so the job error is debuggable, and so the Celery task retries on
@@ -42,7 +47,7 @@ async def generate_tts_audio(voice_id: str, text: str) -> bytes:
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(
             f"{EL_BASE}/text-to-speech/{voice_id}",
-            headers={**_headers(), "Content-Type": "application/json"},
+            headers={**_headers(api_key), "Content-Type": "application/json"},
             json={
                 "text": text,
                 "model_id": settings.elevenlabs_model,
@@ -57,13 +62,13 @@ async def generate_tts_audio(voice_id: str, text: str) -> bytes:
     )
 
 
-async def generate_preview_audio(voice_id: str) -> bytes | None:
+async def generate_preview_audio(voice_id: str, api_key: str | None = None) -> bytes | None:
     """Call ElevenLabs TTS with a short sample text and return audio bytes."""
     async with httpx.AsyncClient(timeout=20) as client:
         try:
             resp = await client.post(
                 f"{EL_BASE}/text-to-speech/{voice_id}",
-                headers={**_headers(), "Content-Type": "application/json"},
+                headers={**_headers(api_key), "Content-Type": "application/json"},
                 json={
                     "text": PREVIEW_TEXT,
                     "model_id": settings.elevenlabs_model,
@@ -82,15 +87,23 @@ _PRESET_NAME_MAP = {v["id"]: v["name"] for v in PRESET_VOICES}
 VALIDATE_TEXT = "Hello."
 
 
-async def validate_voice_id(voice_id: str) -> dict:
-    """Validate an ElevenLabs voice ID by attempting a minimal TTS call."""
+async def validate_voice_id(voice_id: str, api_key: str | None = None) -> dict:
+    """Validate an ElevenLabs voice ID by attempting a minimal TTS call.
+
+    Returns {"valid", "name", "voice_id", "reason"}. `reason` distinguishes the
+    two common failure modes so the UI can explain what to do:
+      - "not_accessible": the ID exists but isn't reachable with THIS key
+        (private voice from another account → user must supply their own key)
+      - "invalid_key": the supplied api_key itself was rejected
+      - "invalid": anything else (malformed/unknown ID, network error)
+    """
     preset_name = _PRESET_NAME_MAP.get(voice_id)
 
     async with httpx.AsyncClient(timeout=20) as client:
         try:
             resp = await client.post(
                 f"{EL_BASE}/text-to-speech/{voice_id}",
-                headers={**_headers(), "Content-Type": "application/json"},
+                headers={**_headers(api_key), "Content-Type": "application/json"},
                 json={
                     "text": VALIDATE_TEXT,
                     "model_id": settings.elevenlabs_model,
@@ -98,7 +111,14 @@ async def validate_voice_id(voice_id: str) -> dict:
                 },
             )
             if resp.status_code == 200:
-                return {"valid": True, "name": preset_name, "voice_id": voice_id}
-            return {"valid": False, "name": None, "voice_id": voice_id}
+                return {"valid": True, "name": preset_name, "voice_id": voice_id, "reason": None}
+            body = resp.text or ""
+            if resp.status_code == 401:
+                reason = "invalid_key"
+            elif "voice_not_found" in body or resp.status_code == 404:
+                reason = "not_accessible"
+            else:
+                reason = "invalid"
+            return {"valid": False, "name": None, "voice_id": voice_id, "reason": reason}
         except httpx.HTTPError:
-            return {"valid": False, "name": None, "voice_id": voice_id}
+            return {"valid": False, "name": None, "voice_id": voice_id, "reason": "invalid"}
