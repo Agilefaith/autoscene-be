@@ -56,6 +56,7 @@ async def create_project(body: ProjectCreate, user_id: CurrentUserId):
         "script_id": body.script_id,
         "voice_config_id": body.voice_config_id,
         "reference_image_url": body.reference_image_url,
+        "characters": [c.model_dump() for c in body.characters],
         "render_mode": body.render_mode,
         "format": body.format,
         "niche": body.niche,

@@ -17,12 +17,17 @@ from openai import AsyncOpenAI
 
 from app.core.config import get_settings
 from app.schemas.common import style_prompt
+from app.services.character_sheet import cast_block
 
 settings = get_settings()
 _client = AsyncOpenAI(api_key=settings.openai_api_key)
 
-# Quality boosters appended to every prompt.
+# Quality boosters appended when a style has no dedicated style block.
 _STYLE_SUFFIX = "highly detailed, sharp focus, professional lighting"
+
+# Faith's prompt-engine "final lock line" — the last line of every image prompt.
+_LOCK_LINE = ("The image must exactly match the narration with zero deviation, "
+              "no extra elements, no missing elements.")
 
 
 def target_scene_count(duration_seconds: int, scene_duration: int) -> int:
@@ -32,14 +37,23 @@ def target_scene_count(duration_seconds: int, scene_duration: int) -> int:
 
 def _system_prompt(render_mode: str) -> str:
     base = (
-        "You are AutoScene's scene-breakdown engine. You split a narration script "
-        "into sequential scenes of roughly equal length and, for EACH scene, write "
-        "a detailed text-to-image prompt (for Stability AI SDXL) that visually "
-        "matches exactly what that scene narrates. Image prompts must be concrete and "
-        "cinematic: describe subject, setting, composition, lighting, and mood. "
-        "Never include text, captions, logos, or watermarks in the image prompt. "
-        "Keep the SAME main character description and environment consistent across "
-        "scenes for visual continuity. Output valid JSON only."
+        "You are AutoScene's scene-breakdown engine — an expert storyboard artist, "
+        "cinematic director, and visual prompt engineer. You split a narration script "
+        "into sequential scenes of roughly equal length and, for EACH scene, write a "
+        "detailed, generation-ready text-to-image prompt that is a DIRECT visual "
+        "representation of that scene's narration: every key noun and every action in "
+        "the narration must be visible in the image; never invent elements that are "
+        "not narrated and never omit important ones. Build each image prompt in this "
+        "order: (1) shot type + main subject, (2) character description — every "
+        "character keeps the SAME identity (face structure, hair, skin tone, body "
+        "proportions) across ALL scenes so they are instantly recognizable in every "
+        "frame, (3) the visible action, (4) clothing appropriate to the scene context "
+        "(clothing may change per scene; identity never), (5) environment with "
+        "foreground/midground/background depth, (6) all props the narration mentions "
+        "and no others, (7) lighting (time of day, source direction, quality), "
+        "(8) mood expressed visually through pose and composition, (9) camera framing "
+        "and depth of field. Never include text, captions, logos, or watermarks in "
+        "the image prompt. Output valid JSON only."
     )
     if render_mode == "mode_2":
         base += (
@@ -51,9 +65,11 @@ def _system_prompt(render_mode: str) -> str:
     return base
 
 
-def _user_prompt(script: str, niche: str, style_text: str, n_scenes: int, render_mode: str) -> str:
+def _user_prompt(script: str, niche: str, style_text: str, n_scenes: int, render_mode: str,
+                 cast: str = "") -> str:
     style_line = f"Visual style for EVERY scene: {style_text}." if style_text else ""
     niche_line = f"Content niche: {niche}." if niche else ""
+    cast_line = f"{cast}\n\n" if cast else ""
     if render_mode == "mode_2":
         shape = (
             '  {"scene_text": str, "emotion": str, "action": str, "environment": str, '
@@ -69,6 +85,7 @@ def _user_prompt(script: str, niche: str, style_text: str, n_scenes: int, render
 
     return (
         f"{style_line} {niche_line}\n\n"
+        f"{cast_line}"
         f"Split this script into EXACTLY {n_scenes} sequential scenes that together "
         f"cover the whole script in order. Assign each scene the portion of the "
         f"narration it illustrates (scene_text). {note}\n\n"
@@ -126,15 +143,20 @@ async def _breakdown_chunk(
     render_mode: str,
     niche: str,
     style_text: str,
+    cast: str = "",
 ) -> list[dict]:
     """One OpenAI call: break a single script chunk into exactly `n_scenes` raw
     scene dicts. `max_tokens` is capped and the batch is bounded by the caller so a
-    response never overflows the model's output limit and truncates the JSON."""
+    response never overflows the model's output limit and truncates the JSON.
+
+    `cast` (the identity-lock block) is passed to EVERY chunk — the chunks run as
+    separate parallel calls, so without it each one invents its own look for the
+    same character and the cast drifts across a long video."""
     response = await _client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": _system_prompt(render_mode)},
-            {"role": "user", "content": _user_prompt(script_chunk, niche, style_text, n_scenes, render_mode)},
+            {"role": "user", "content": _user_prompt(script_chunk, niche, style_text, n_scenes, render_mode, cast)},
         ],
         temperature=0.6,
         max_tokens=16000,
@@ -145,11 +167,11 @@ async def _breakdown_chunk(
 
 
 def _decorate(prompt: str, style_text: str) -> str:
-    """Prepend the chosen style STRONGLY (so the whole video shares one look) and
-    append quality boosters. Style is enforced at the front of every prompt."""
+    """Embed the chosen style block at the END of the prompt (Faith's prompt-engine
+    spec: scene description first, style block appended, lock line last)."""
     p = (prompt or "").strip().rstrip(".")
-    prefix = f"{style_text.strip().rstrip('.')}. " if style_text else ""
-    return f"{prefix}{p}, {_STYLE_SUFFIX}"
+    style = (style_text or _STYLE_SUFFIX).strip().rstrip(".")
+    return f"{p}. {style}. {_LOCK_LINE}"
 
 
 async def breakdown_script(
@@ -160,15 +182,20 @@ async def breakdown_script(
     style: str = "",
     duration_seconds: int = 60,
     scene_duration: int | None = None,
+    characters: list[dict] | None = None,
 ) -> list[dict]:
     """Return a list of scene dicts ready to insert into the `scenes` table.
 
     Each dict: idx, scene_text, emotion, action, environment, image_prompt,
     image_prompts (mode_2 only), duration_seconds.
+
+    `characters` is the project's named cast (see services/character_sheet.py);
+    their identity-lock block is shared by every breakdown call.
     """
     scene_dur = scene_duration or settings.scene_duration_seconds
     n_scenes = target_scene_count(duration_seconds, scene_dur)
     style_text = style_prompt(style)  # strong style descriptor for this style id
+    cast = cast_block(characters or [])
 
     # Bound scenes-per-call so one response never overflows the model's output-token
     # cap (which truncates the JSON mid-string). Long scripts are split into several
@@ -186,7 +213,8 @@ async def breakdown_script(
         counts = _distribute_counts(n_scenes, chunks)
 
     batches = await asyncio.gather(*(
-        _breakdown_chunk(chunk, cnt, render_mode=render_mode, niche=niche, style_text=style_text)
+        _breakdown_chunk(chunk, cnt, render_mode=render_mode, niche=niche,
+                         style_text=style_text, cast=cast)
         for chunk, cnt in zip(chunks, counts)
     ))
     raw_scenes = [s for batch in batches for s in batch]

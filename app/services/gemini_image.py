@@ -19,18 +19,38 @@ settings = get_settings()
 _BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
+class GeminiCreditsDepletedError(RuntimeError):
+    """The Gemini API key's prepaid credits / quota are exhausted (HTTP 429
+    RESOURCE_EXHAUSTED). Falling back silently would degrade every image in the
+    video, so callers should fail loudly instead."""
+
+
 def generate_image_gemini(
     prompt: str,
     fmt: str = "9:16",
     *,
     reference_bytes: bytes | None = None,
+    references: list[tuple[str, bytes]] | None = None,
     reference_mime: str = "image/png",
 ) -> bytes:
     """Generate one image via Gemini (synchronous; called from a worker thread).
-    If reference_bytes is given, the subject in the reference is kept consistent.
+
+    `references` is the project's named cast as [(name, image_bytes)] — each one
+    is attached with a label so Gemini knows which face belongs to which name in
+    the prompt. `reference_bytes` is the legacy single-reference form.
     Raises on failure so the caller can fall back to Stability."""
     parts: list = [{"text": prompt}]
-    if reference_bytes:
+    for name, data in (references or []):
+        if name:
+            parts.append({"text": f"Reference image for {name} — keep this character's "
+                                  f"face, hair, skin tone, and build identical:"})
+        parts.append({
+            "inline_data": {
+                "mime_type": reference_mime,
+                "data": base64.b64encode(data).decode(),
+            }
+        })
+    if reference_bytes and not references:
         parts.append({
             "inline_data": {
                 "mime_type": reference_mime,
@@ -54,6 +74,12 @@ def generate_image_gemini(
             headers={"Content-Type": "application/json"},
             json=body,
         )
+    # Only the depleted-balance 429 is terminal; per-minute rate-limit 429s are
+    # transient and must keep falling through to the caller's normal handling.
+    if resp.status_code == 429 and (
+        "depleted" in resp.text or "prepayment" in resp.text
+    ):
+        raise GeminiCreditsDepletedError(f"Gemini HTTP 429: {resp.text[:300]}")
     if resp.status_code != 200:
         raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:300]}")
 

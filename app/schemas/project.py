@@ -6,6 +6,19 @@ from app.schemas.common import RenderMode, AutoSceneFormat, SubtitleSettings
 from app.schemas.scene import SceneResponse
 
 
+class CharacterRef(BaseModel):
+    """One named cast member: a reference image plus the name the script uses for
+    them. `description` is the locked physical description built from the image by
+    app/services/character_sheet.py — the client never sets it.
+
+    An empty name is allowed: legacy single-reference projects have no name, and a
+    nameless reference still conditions the image engine. It just can't take part
+    in the by-name identity lock (see character_sheet.cast_block)."""
+    name: str = Field("", max_length=60)
+    image_url: str
+    description: Optional[str] = None
+
+
 class ProjectCreate(BaseModel):
     """Create a new project (draft). Only a name is strictly required; the rest is
     filled in across the Script → Configure steps."""
@@ -13,6 +26,7 @@ class ProjectCreate(BaseModel):
     script_id: Optional[str] = None
     voice_config_id: Optional[str] = None
     reference_image_url: Optional[str] = None
+    characters: list[CharacterRef] = []
     render_mode: RenderMode = "mode_1"
     format: AutoSceneFormat = "9:16"
     niche: Optional[str] = None
@@ -27,6 +41,7 @@ class ProjectUpdate(BaseModel):
     script_id: Optional[str] = None
     voice_config_id: Optional[str] = None
     reference_image_url: Optional[str] = None
+    characters: Optional[list[CharacterRef]] = None
     render_mode: Optional[RenderMode] = None
     format: Optional[AutoSceneFormat] = None
     niche: Optional[str] = None
@@ -47,6 +62,7 @@ class ProjectResponse(BaseModel):
     script_id: Optional[str] = None
     voice_config_id: Optional[str] = None
     reference_image_url: Optional[str] = None
+    characters: list[CharacterRef] = []
     request_id: Optional[str] = None
     render_mode: str
     format: str
