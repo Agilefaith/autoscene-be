@@ -14,9 +14,17 @@ from app.services.openai_service import estimate_duration_seconds
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
-# Celery+Redis priority: 0 = highest (drained first). Paid users jump the queue.
-PRIORITY_PAID = 0
+# Celery+Redis priority: 0 = highest (drained first). Three paid tiers mirror the
+# pricing sheet's queue promise — Scale = priority queue, Creator = faster queue,
+# Starter = standard queue — with free/trial always drained last.
+PRIORITY_PAID = 0   # top tier (Scale) + internal
 PRIORITY_FREE = 9
+PLAN_PRIORITY = {
+    "scale": 0, "scale_m2": 0,      # Priority queue
+    "creator": 2, "creator_m2": 2,  # Faster queue
+    "starter": 4,                   # Standard queue
+    "free": PRIORITY_FREE,
+}
 
 # Statuses where the pipeline is actively running (not re-dispatchable / not editable).
 # NOTE: `scenes_ready` is intentionally EXCLUDED — it's a "waiting for the user" state
@@ -251,7 +259,7 @@ async def generate_project(
                 detail="You've used all the videos in your plan for this period. It resets next month, or you can upgrade.",
             )
 
-    priority = PRIORITY_PAID if (plan_tier != "free" or is_internal) else PRIORITY_FREE
+    priority = PRIORITY_PAID if is_internal else PLAN_PRIORITY.get(plan_tier, PRIORITY_FREE)
     from app.workers.tasks.scene_breakdown import run_project_pipeline
     run_project_pipeline.apply_async(args=[project_id], priority=priority, queue="fast")
 
