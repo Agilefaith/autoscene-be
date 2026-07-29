@@ -56,27 +56,62 @@ def _is_usable_sheet(text: str) -> bool:
     return not any(marker in t[:80].lower() for marker in _REFUSAL_MARKERS)
 
 
+# Fallback framing, used when the first attempt comes back as a refusal. Vision
+# refusals here are INTERMITTENT (the same reference can succeed on a retry), and
+# they happen most often on photoreal references. This wording asks only for
+# generic drawable attributes and never for anyone's identity, which clears the
+# refusal in practice.
+_NEUTRAL_SYSTEM = (
+    "You write visual style notes for animation production. You never identify or name "
+    "real individuals; you only note generic visual attributes so an illustrator can draw "
+    "a consistent fictional character."
+)
+_NEUTRAL_INSTRUCTION = (
+    "This is a character-design reference for an animated video. In ONE sentence "
+    "(max 45 words), note only the generic visual attributes an illustrator needs to keep "
+    "the drawing consistent: apparent age range, gender presentation, general face shape, "
+    "eye colour, skin tone, hair colour/length/texture, and build. Do not identify anyone, "
+    "and do not describe clothing, background, pose, or mood. No preamble."
+)
+
+
+async def _ask_vision(image_url: str, system: str, instruction: str) -> str:
+    resp = await _client.chat.completions.create(
+        model="gpt-4o",  # full 4o: design detail from an image needs the stronger vision model
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": [
+                {"type": "text", "text": instruction},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ]},
+        ],
+        temperature=0.2,
+        max_tokens=120,
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
 async def _describe_one(image_url: str) -> str | None:
-    """GPT-Vision → one locked identity sentence, or None if no usable sheet came
-    back. None is deliberate: that character then takes no part in the by-name
-    identity lock, instead of poisoning every image prompt with a refusal string."""
-    try:
-        resp = await _client.chat.completions.create(
-            model="gpt-4o",  # full 4o: design detail from an image needs the stronger vision model
-            messages=[
-                {"role": "system", "content": _SYSTEM},
-                {"role": "user", "content": [
-                    {"type": "text", "text": _SHEET_INSTRUCTION},
-                    {"type": "image_url", "image_url": {"url": image_url}},
-                ]},
-            ],
-            temperature=0.2,
-            max_tokens=120,
-        )
-        sheet = (resp.choices[0].message.content or "").strip()
-        return sheet if _is_usable_sheet(sheet) else None
-    except Exception:
-        return None
+    """GPT-Vision → one locked identity sentence, or None if every attempt failed.
+
+    Tries the art-director framing first, then a neutral attributes-only framing.
+    The retry matters: a refusal from the vision model is intermittent, and a
+    character that ends up without a sheet loses its per-scene feature lock (it
+    still keeps a by-name + reference-image lock — see cast_block).
+    """
+    attempts = (
+        (_SYSTEM, _SHEET_INSTRUCTION),
+        (_NEUTRAL_SYSTEM, _NEUTRAL_INSTRUCTION),
+        (_NEUTRAL_SYSTEM, _NEUTRAL_INSTRUCTION),  # refusals are flaky; one more roll
+    )
+    for system, instruction in attempts:
+        try:
+            sheet = await _ask_vision(image_url, system, instruction)
+            if _is_usable_sheet(sheet):
+                return sheet
+        except Exception:
+            continue
+    return None
 
 
 async def build_character_sheets(characters: list[dict]) -> list[dict]:
@@ -95,8 +130,9 @@ async def build_character_sheets(characters: list[dict]) -> list[dict]:
 
 
 def unlocked_names(characters: list[dict]) -> list[str]:
-    """Named characters that ended up WITHOUT a usable sheet — they get no by-name
-    identity lock, so the caller should surface this rather than degrade quietly."""
+    """Named characters that ended up WITHOUT a usable sheet. They still get a
+    by-name + reference-image lock (see cast_block), but not the per-scene feature
+    restatement, so the caller should surface this rather than degrade quietly."""
     return [
         c["name"] for c in characters
         if (c.get("name") or "").strip() and not (c.get("description") or "").strip()
@@ -110,13 +146,20 @@ def cast_block(characters: list[dict]) -> str:
     OpenAI calls, and without a shared cast block each call would invent its own
     look for the same character, so the cast drifted between chunks.
     """
-    named = [
-        c for c in characters
-        if (c.get("name") or "").strip() and (c.get("description") or "").strip()
-    ]
+    named = [c for c in characters if (c.get("name") or "").strip()]
     if not named:
         return ""
-    lines = "\n".join(f"- {c['name']}: {c['description']}" for c in named)
+    # A character whose sheet couldn't be built still belongs in the block. Dropping
+    # it left the scene engine free to re-invent that character every scene (the
+    # exact drift Faith reported for "Ada"); naming it here keeps it anchored to its
+    # reference image, which the image engine receives labelled by name.
+    lines = "\n".join(
+        f"- {c['name']}: {c['description'].strip()}" if (c.get("description") or "").strip()
+        else (f"- {c['name']}: (see the reference image supplied for {c['name']}) — keep this "
+              f"character's face, hair, skin tone and build EXACTLY as in that reference, "
+              f"identical in every scene")
+        for c in named
+    )
     return (
         "CAST — IDENTITY LOCK (HIGHEST PRIORITY, applies to EVERY scene):\n"
         f"{lines}\n"
