@@ -27,7 +27,8 @@ _STYLE_SUFFIX = "highly detailed, sharp focus, professional lighting"
 
 # Faith's prompt-engine "final lock line" — the last line of every image prompt.
 _LOCK_LINE = ("The image must exactly match the narration with zero deviation, "
-              "no extra elements, no missing elements.")
+              "no extra elements, no missing elements. Single full-bleed image, one "
+              "continuous scene, no split panels, no collage, no borders.")
 
 
 def target_scene_count(duration_seconds: int, scene_duration: int) -> int:
@@ -53,7 +54,10 @@ def _system_prompt(render_mode: str) -> str:
         "and no others, (7) lighting (time of day, source direction, quality), "
         "(8) mood expressed visually through pose and composition, (9) camera framing "
         "and depth of field. Never include text, captions, logos, or watermarks in "
-        "the image prompt. Output valid JSON only."
+        "the image prompt. Each prompt must describe ONE single continuous moment "
+        "from ONE camera position — never a split panel, diptych, collage, storyboard "
+        "grid, or before/after layout; when a scene's narration spans two moments, "
+        "pick the single most visual one. Output valid JSON only."
     )
     if render_mode == "mode_2":
         base += (

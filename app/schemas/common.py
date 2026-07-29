@@ -147,7 +147,8 @@ STYLES: dict[str, dict] = {
                    "thickness, minimalistic aesthetic"),
         "negative": ("realistic human, detailed anatomy, 3D render, photorealism, anime, "
                      "comic book style, messy sketch lines, blank empty background, bright "
-                     "saturated colors, thick outlines, exaggerated cartoon proportions"),
+                     "saturated colors, thick outlines, exaggerated cartoon proportions"
+                     ", split panel, diptych, collage, storyboard grid, letterbox bars"),
     },
     # Faith's written block asked for a "stylized 3D animation look"; her reference
     # image and her 2026-07-24 instruction ("stick to 2D animated cartoon") say flat
@@ -164,7 +165,8 @@ STYLES: dict[str, dict] = {
         "negative": ("3D render, CGI, photorealism, realistic textures, whiteboard style, "
                      "doodle, stickman, sketch, rough lines, outline-only art, low detail, "
                      "childish drawing, black and white line art, minimal shading, crude "
-                     "illustration"),
+                     "illustration"
+                     ", split panel, diptych, collage, storyboard grid, letterbox bars"),
     },
     "ghibli": {
         "label": "Ghibli Anime (Soft Cinematic Style)",
@@ -177,7 +179,8 @@ STYLES: dict[str, dict] = {
                    "background art"),
         "negative": ("3D render, hyperrealistic photo, photorealism, CGI, western cartoon, "
                      "whiteboard, doodle, stickman, comic book style, chibi, vector art, flat "
-                     "design, oversaturated colors, harsh lighting, low detail, blurry, noisy"),
+                     "design, oversaturated colors, harsh lighting, low detail, blurry, noisy"
+                     ", split panel, diptych, collage, storyboard grid, letterbox bars"),
     },
     "cinematic": {
         "label": "Cinematic",
@@ -187,7 +190,8 @@ STYLES: dict[str, dict] = {
                    "of field, lens blur, cinematic color grading, volumetric lighting, realistic "
                    "environment detail, sharp focus on subject, professional film still quality"),
         "negative": ("cartoon, anime, illustration, drawing, sketch, painting, low detail, "
-                     "flat lighting, oversaturated colors, deformed anatomy, blurry"),
+                     "flat lighting, oversaturated colors, deformed anatomy, blurry"
+                     ", split panel, diptych, collage, storyboard grid, letterbox bars"),
     },
 }
 STYLE_IDS: list[str] = list(STYLES.keys())
