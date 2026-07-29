@@ -105,7 +105,9 @@ def assemble_task(self, project_id: str):
             # Whisper's 25 MB cap on long narrations.
             trans_src = os.path.join(tmpdir, "transcribe.mp3")
             src = trans_src if _extract_audio(audio_path, trans_src) else audio_path
-            transcription = asyncio.run(transcribe(src))
+            # Seed Whisper with the cast names so subtitles spell them correctly.
+            cast_names = [c.get("name") for c in (project.get("characters") or []) if c.get("name")]
+            transcription = asyncio.run(transcribe(src, vocabulary=cast_names))
             style = {
                 "font_color": project.get("subtitle_color", "#FFFFFF"),
                 "font_size": project.get("subtitle_size") or 84,  # readable default (see SUBTITLE_SIZES)
