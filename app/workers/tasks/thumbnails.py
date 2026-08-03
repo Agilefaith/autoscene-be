@@ -19,6 +19,7 @@ from app.core.celery_app import celery_app
 from app.core.config import get_settings
 from app.services.supabase import get_supabase_client
 from app.services.backblaze import upload_bytes
+from app.services.ffmpeg_scene import to_youtube_thumbnail
 from app.schemas.common import style_prompt, style_sdxl_preset, style_negative
 from app.workers.tasks.image_gen import _gen_one
 from app.workers.tasks.project_common import log_event, get_project
@@ -76,6 +77,8 @@ async def _generate(project: dict, script_text: str) -> list[str]:
             prompt, _THUMB_FORMAT, style_sdxl_preset(style_id),
             seed=9000 + i, cast=[], negative=style_negative(style_id),
         )
+        # Normalise to YouTube's exact 1280x720 so the download is upload-ready.
+        img = to_youtube_thumbnail(img)
         key = f"projects/{project['user_id']}/{project['id']}/thumb_{i}.png"
         urls.append(upload_bytes(img, key, "image/png"))
     return urls

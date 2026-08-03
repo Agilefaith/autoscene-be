@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import re
 import uuid
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
@@ -15,6 +16,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from app.core.config import get_settings
 from app.core.deps import CurrentUserId
 from app.services.backblaze import upload_bytes
+from app.services.ffmpeg_scene import draw_thumbnail_text, to_youtube_thumbnail
 from app.services.gemini_image import generate_image_gemini, GeminiCreditsDepletedError
 from app.services.supabase import get_supabase_client
 
@@ -26,11 +28,31 @@ _MAX_BYTES = 8 * 1024 * 1024  # 8 MB
 
 _CLONE_PROMPT = (
     "Recreate this thumbnail's composition, framing, color grading, and dramatic "
-    "energy as a NEW original 16:9 YouTube thumbnail — do not copy it pixel-for-pixel, "
-    "and do not reproduce any text, logos, faces of real people, or watermarks from it. "
+    "energy as a NEW original 16:9 YouTube thumbnail. Do not copy it pixel-for-pixel, "
+    "and do not carry over its logos, watermarks, or the faces of real people. "
     "Apply these changes from the user: {instructions}. "
-    "High contrast, vivid colors, one clear focal point, room for title text."
+    "High contrast, vivid colors, one clear focal point.{text_directive}"
 )
+
+# Rendering words correctly is the weak spot of image models: asking for
+# "NO JAGUARS" produced "NO JAGJAARS" (Faith, 2026-08-03). Quoting the exact
+# string and spelling it out letter by letter is what makes it land.
+_TEXT_DIRECTIVE = (
+    " Leave the lower third of the frame visually clean and uncluttered so a headline "
+    "can be placed there. Render NO text, letters, words, captions, numbers or logos "
+    "anywhere in the image."
+)
+
+
+def wanted_headline(instructions: str) -> str:
+    """The exact wording the user asked for, taken from quotes in their request.
+
+    Users write the words they want in quotes ("NO JAGUARS"). We render those
+    ourselves rather than asking the image model, which cannot spell reliably.
+    """
+    found = re.findall(r'["\u201c\u2018\']([^"\u201d\u2019\']{1,60})["\u201d\u2019\']', instructions or "")
+    found = [w.strip() for w in found if w.strip()]
+    return found[0] if found else ""
 
 
 @router.post("/projects/{project_id}", status_code=status.HTTP_202_ACCEPTED)
@@ -80,9 +102,10 @@ async def clone_thumbnail(
             detail="Thumbnail cloning needs the Gemini image engine, which isn't configured.",
         )
 
+    instr = instructions.strip() or "keep the same subject and mood"
+    headline = wanted_headline(instr)
     prompt = _CLONE_PROMPT.format(
-        instructions=(instructions.strip() or "keep the same subject and mood")
-    )
+        instructions=instr, text_directive=_TEXT_DIRECTIVE if headline else "")
     try:
         img = await asyncio.to_thread(
             generate_image_gemini, prompt, "16:9",
@@ -100,6 +123,11 @@ async def clone_thumbnail(
             detail="Thumbnail generation failed. Please try again.",
         )
 
+    # Normalise to YouTube's exact 1280x720, then burn the requested headline so
+    # its spelling is exact (the image model gets this wrong).
+    img = to_youtube_thumbnail(img)
+    if headline:
+        img = draw_thumbnail_text(img, headline)
     key = f"thumbnails/{user_id}/{uuid.uuid4().hex}.png"
     url = upload_bytes(img, key, "image/png")
     return {"url": url}

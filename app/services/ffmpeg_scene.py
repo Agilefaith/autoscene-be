@@ -289,3 +289,100 @@ def probe_duration(path: str) -> float:
         return float(out)
     except (ValueError, FileNotFoundError, subprocess.SubprocessError):
         return 0.0
+
+
+# YouTube's thumbnail spec is 1280x720 (16:9). Gemini returns 1344x768 (ratio 1.75),
+# which YouTube letterboxes or crops on upload — so a downloaded thumbnail could not
+# be used as-is (Faith, 2026-08-03).
+YOUTUBE_THUMBNAIL_SIZE = (1280, 720)
+
+
+def to_youtube_thumbnail(image_bytes: bytes) -> bytes:
+    """Return the image cropped and scaled to exactly 1280x720.
+
+    Scales up to cover the frame, then centre-crops, so the composition is filled
+    edge to edge with no letterbox bars. Returns the input unchanged if FFmpeg is
+    unavailable or fails — a slightly-off thumbnail beats no thumbnail.
+    """
+    w, h = YOUTUBE_THUMBNAIL_SIZE
+    tmpdir = tempfile.mkdtemp()
+    try:
+        src = os.path.join(tmpdir, "in.png")
+        dst = os.path.join(tmpdir, "out.png")
+        with open(src, "wb") as f:
+            f.write(image_bytes)
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", src, "-vf",
+             f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}",
+             "-frames:v", "1", dst],
+            check=True, capture_output=True, timeout=120,
+        )
+        with open(dst, "rb") as f:
+            return f.read()
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return image_bytes
+    finally:
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# Image models cannot spell reliably: asking Gemini for "NO JAGUARS" returned
+# "NO JAGJAARS", then "NO JAG ARS" (Faith, 2026-08-03). So when the user asks for
+# specific wording we generate the artwork WITHOUT text and draw the text here,
+# where the spelling is exact by construction.
+_THUMB_FONTS = (
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",  # local dev (macOS)
+)
+
+
+def _thumbnail_font() -> str | None:
+    return next((f for f in _THUMB_FONTS if os.path.exists(f)), None)
+
+
+def _escape_drawtext(text: str) -> str:
+    """Escape a literal string for FFmpeg's drawtext filter."""
+    out = text.replace("\\", r"\\\\").replace(":", r"\:").replace("'", r"\'")
+    return out.replace("%", r"\%").replace(",", r"\,").replace("[", r"\[").replace("]", r"\]")
+
+
+def draw_thumbnail_text(image_bytes: bytes, text: str) -> bytes:
+    """Burn `text` onto a 1280x720 thumbnail as bold display type.
+
+    White fill with a heavy black outline and a drop shadow, sized to fit the
+    frame width, sitting in the lower third. Returns the image unchanged if no
+    usable font is present or FFmpeg fails."""
+    text = (text or "").strip()
+    font = _thumbnail_font()
+    if not text or not font:
+        return image_bytes
+
+    w, h = YOUTUBE_THUMBNAIL_SIZE
+    # Liberation Sans Bold caps run ~0.62em wide; size the text to fill ~88% of the
+    # frame, clamped so short words don't become absurdly large.
+    size = int(min(150, max(48, (w * 0.88) / (max(1, len(text)) * 0.62))))
+
+    tmpdir = tempfile.mkdtemp()
+    try:
+        src = os.path.join(tmpdir, "in.png")
+        dst = os.path.join(tmpdir, "out.png")
+        with open(src, "wb") as f:
+            f.write(image_bytes)
+        vf = (
+            f"drawtext=fontfile='{font}':text='{_escape_drawtext(text)}':"
+            f"fontcolor=white:fontsize={size}:borderw={max(3, size // 18)}:bordercolor=black:"
+            f"shadowx=3:shadowy=3:shadowcolor=black@0.6:"
+            f"x=(w-text_w)/2:y=h-text_h-{int(h * 0.10)}"
+        )
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", src, "-vf", vf, "-frames:v", "1", dst],
+            check=True, capture_output=True, timeout=120,
+        )
+        with open(dst, "rb") as f:
+            return f.read()
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return image_bytes
+    finally:
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
