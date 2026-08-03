@@ -37,21 +37,17 @@ class SignInRequest(BaseModel):
 
 @router.post("/signup")
 async def sign_up(body: SignUpRequest):
-    """Register with Supabase Auth and create a users row."""
-    client = get_supabase_client()
-    try:
-        auth_resp = client.auth.admin.create_user({
-            "email": body.email,
-            "password": body.password,
-            "email_confirm": True,
-            "user_metadata": {"name": body.name},
-        })
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    """Self-service signup is closed: AutoScene is invite-only (Faith, 2026-08-03).
 
-    user_id = auth_resp.user.id
-
-    return {"user_id": user_id, "message": "Account created successfully."}
+    Accounts are created by the admin through POST /admin/invites, which sends a
+    Supabase invitation so the invitee sets their own password. The endpoint is
+    kept (rather than deleted) so an old client gets a clear explanation instead
+    of a 404.
+    """
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="AutoScene is invite-only. Ask the administrator for an invitation.",
+    )
 
 
 @router.post("/me")

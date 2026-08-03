@@ -42,33 +42,21 @@ def test_get_me_user_not_found(trial_client):
 
 # ── Signup ────────────────────────────────────────────────────────────────────
 
-def test_signup_creates_auth_user():
-    """Signup creates the Supabase auth user and returns its id.
-
-    The users row + trial credit are created by a DB trigger (handle_new_user in
-    supabase_migration.sql), NOT by this route — so the route's contract is just:
-    create the auth user, return user_id.
-    """
+def test_signup_is_closed_because_the_app_is_invite_only():
+    """Self-service signup is disabled (Faith, 2026-08-03): accounts are created
+    only through an admin invitation, so this must refuse rather than register."""
     from fastapi.testclient import TestClient
     from app.main import app
 
-    mock_user = MagicMock()
-    mock_user.id = "new-user-id"
-
-    supabase = MagicMock()
-    supabase.auth.admin.create_user.return_value = MagicMock(user=mock_user)
-
     client = TestClient(app)
-    with patch("app.api.routes.auth.get_supabase_client", return_value=supabase):
-        resp = client.post("/api/auth/signup", json={
-            "email": "test@example.com",
-            "password": "Password123!",   # must satisfy the password policy
-            "name": "Test User",
-        })
+    resp = client.post("/api/auth/signup", json={
+        "email": "test@example.com",
+        "password": "Password123!",
+        "name": "Test User",
+    })
 
-    assert resp.status_code == 200
-    assert resp.json()["user_id"] == "new-user-id"
-    supabase.auth.admin.create_user.assert_called_once()
+    assert resp.status_code == 403
+    assert "invite" in resp.json()["detail"].lower()
 
 
 def test_signup_rejects_weak_password():

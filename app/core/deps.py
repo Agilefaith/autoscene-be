@@ -106,3 +106,17 @@ async def get_current_user(
 CurrentUserId = Annotated[str, Depends(get_current_user_id)]
 CurrentUser   = Annotated[dict, Depends(get_current_user)]
 AppSettings   = Annotated[Settings, Depends(get_settings)]
+
+
+async def require_admin(user: Annotated[dict, Depends(get_current_user)]) -> dict:
+    """Gate a route to admins. Faith's account is the only admin (see the
+    2026-08-03 invite-only migration); everyone else is a plain user."""
+    if (user.get("role") or "user") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admins only.",
+        )
+    return user
+
+
+CurrentAdmin = Annotated[dict, Depends(require_admin)]

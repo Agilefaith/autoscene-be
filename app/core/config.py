@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     supabase_jwt_secret: str
     supabase_anon_key: str
 
+    # ── Access control ────────────────────────────────────────────────────────
+    # The app is invite-only. This address is the administrator: the only account
+    # that can invite others (see api/routes/admin.py). Config-driven so it can be
+    # changed without a migration.
+    admin_email: str = "faithfuliselen@gmail.com"
+
     # ── At-rest encryption (per-user voice API keys) ──────────────────────────
     # Optional: when empty, the Fernet key is derived from supabase_jwt_secret
     # (see app/services/crypto.py). Set explicitly to rotate independently.
