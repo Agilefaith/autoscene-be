@@ -184,10 +184,11 @@ def generate_images_task(self, project_id: str):
                 **engine_stats,
             })
 
-        # Track SDXL spend (biggest variable cost) for cost monitoring.
+        # Track image spend (the biggest variable cost) priced per engine — Gemini
+        # is ~5x SDXL, so a flat SDXL rate would badly under-report it.
         from app.services import metrics
         metrics.log_metric(project_id, "images",
-                           int((time.time() - start) * 1000), metrics.sdxl_cost(n_images))
+                           int((time.time() - start) * 1000), metrics.image_cost(engine_stats))
         log_event(project_id, "images", "completed",
                   int((time.time() - start) * 1000),
                   {"scenes": len(scenes), "images": n_images,
