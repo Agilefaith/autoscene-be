@@ -289,3 +289,50 @@ async def cancel_project(project_id: str, user_id: CurrentUserId):
         refund_credits(user_id, project_id, project["credits_used"])
         refunded = True
     return {"status": "cancelled", "refunded": refunded}
+
+
+# Where a retry resumes from, per failure status. Each stage is idempotent — the
+# image stage skips scenes that already have images and the render stage skips
+# clips that already exist — so a retry only redoes the work that failed.
+_RETRY_RESUME = {
+    "failed_at_breakdown": ("app.workers.tasks.scene_breakdown", "run_project_pipeline", "pending", "fast"),
+    "failed_at_script":    ("app.workers.tasks.scene_breakdown", "run_project_pipeline", "pending", "fast"),
+    "failed_at_images":    ("app.workers.tasks.image_gen", "generate_images_task", "generating_images", "media"),
+    "failed_at_voiceover": ("app.workers.tasks.voiceover", "generate_voiceover_task", "voiceover", "media"),
+    "failed_at_render":    ("app.workers.tasks.scene_render", "render_scenes_task", "rendering_scenes", "media"),
+    "failed_at_assembly":  ("app.workers.tasks.assembly", "assemble_task", "assembling", "media"),
+}
+
+
+@router.post("/{project_id}/retry")
+async def retry_project(project_id: str, user_id: CurrentUserId, user: CurrentUser):
+    """Resume a failed render from the stage that failed, without re-charging.
+
+    The user already spent a video on this project, so a retry does not consume
+    quota again. A timed-out project restarts from the beginning of the pipeline,
+    where the completed stages are skipped anyway.
+    """
+    project = _owned_project(project_id, user_id, "id, status, credits_used")
+    status_now = project["status"]
+    if status_now in ACTIVE_STATUSES:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="This video is already being generated.")
+    if status_now == "completed":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="This video already finished.")
+
+    module, task_name, next_status, queue = _RETRY_RESUME.get(
+        status_now,
+        ("app.workers.tasks.scene_breakdown", "run_project_pipeline", "pending", "fast"),
+    )
+
+    get_supabase_client().table("projects").update(
+        {"status": next_status, "error_message": None}
+    ).eq("id", project_id).execute()
+
+    plan_tier = user.get("plan_tier", "free")
+    priority = (PRIORITY_PAID if user.get("user_type") == "internal"
+                else PLAN_PRIORITY.get(plan_tier, PRIORITY_FREE))
+    task = getattr(__import__(module, fromlist=[task_name]), task_name)
+    task.apply_async(args=[project_id], priority=priority, queue=queue)
+    return {"status": next_status, "resumed_from": status_now}
