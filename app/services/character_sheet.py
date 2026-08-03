@@ -31,8 +31,10 @@ _SHEET_INSTRUCTION = (
     "Write the character-design notes for the character in this reference, as ONE "
     "dense sentence (max 45 words) covering: apparent age range, gender presentation, "
     "face shape, eye shape and colour, nose and mouth shape, skin tone, hair colour/"
-    "length/texture/style, build and height impression, and any consistent design "
-    "feature (freckles, beard, glasses). "
+    "length/texture/style, and any consistent design feature (freckles, beard, glasses). "
+    "ALWAYS state the body silhouette explicitly — overall build (very thin / slim / "
+    "average / heavy-set), limb thickness (thin or thick arms and legs), shoulder width, "
+    "and height impression — since these must stay identical from scene to scene. "
     "Do NOT describe clothing, background, pose, expression, lighting, or mood — "
     "those change per scene. No names, no preamble, no markdown."
 )
@@ -146,9 +148,20 @@ def cast_block(characters: list[dict]) -> str:
     OpenAI calls, and without a shared cast block each call would invent its own
     look for the same character, so the cast drifted between chunks.
     """
-    named = [c for c in characters if (c.get("name") or "").strip()]
-    if not named:
+    usable = [c for c in characters if (c.get("name") or "").strip() or (c.get("description") or "").strip()]
+    if not usable:
         return ""
+    # An unnamed reference used to be discarded here, throwing away a sheet we had
+    # already built — that is what let a stickman's "extremely thin build" drift into
+    # thicker legs. A lone unnamed character is the video's main character, so lock it
+    # under that label instead of dropping it.
+    unnamed = [c for c in usable if not (c.get("name") or "").strip()]
+    named = [c for c in usable if (c.get("name") or "").strip()]
+    for i, c in enumerate(unnamed):
+        c = dict(c)
+        c["name"] = "The main character" if len(unnamed) == 1 else f"Character {i + 1}"
+        named.append(c)
+    named.sort(key=lambda c: 0 if c["name"].startswith("The main") else 1)
     # A character whose sheet couldn't be built still belongs in the block. Dropping
     # it left the scene engine free to re-invent that character every scene (the
     # exact drift Faith reported for "Ada"); naming it here keeps it anchored to its

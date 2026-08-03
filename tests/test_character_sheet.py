@@ -41,3 +41,16 @@ def test_unlocked_names_reports_the_partial_lock():
 def test_unnamed_references_do_not_produce_a_block():
     assert cast_block([{"name": "", "image_url": "u1", "description": None}]) == ""
     assert cast_block([]) == ""
+
+
+def test_unnamed_reference_still_locks_as_main_character():
+    """Faith's stickman video: a reference was uploaded with no name typed in, so
+    the sheet we had already built was discarded and the body drifted."""
+    block = cast_block([{"name": "", "image_url": "u1",
+                        "description": "round face, dot eyes, extremely thin build, tall impression"}])
+    assert "The main character" in block
+    assert "extremely thin build" in block
+
+
+def test_reference_with_neither_name_nor_sheet_is_ignored():
+    assert cast_block([{"name": "", "image_url": "u1", "description": None}]) == ""
