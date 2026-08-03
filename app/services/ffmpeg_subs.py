@@ -17,6 +17,9 @@ X264_QUALITY = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fm
 # Group word-level timestamps into short, readable caption phrases.
 _MAX_WORDS_PER_CUE = 6
 _MAX_SECONDS_PER_CUE = 2.5
+# Only break at a comma/dash once the cue already carries enough words, or a
+# short clause would flash on screen on its own.
+_MIN_WORDS_BEFORE_CLAUSE_BREAK = 3
 
 
 def _secs_to_srt(secs: float) -> str:
@@ -37,14 +40,25 @@ def _hex_to_ass(color: str) -> str:
 
 
 def _group_words(words: list[dict]) -> list[list[dict]]:
-    """Chunk word items into short phrases (by count, duration, or sentence end)."""
+    """Chunk word items into short caption phrases.
+
+    A cue always ends at a sentence end, so a caption never runs across a full
+    stop into the next sentence ("meet One winter a" — Faith, 2026-08-03; this
+    relies on whisper._restore_punctuation putting the punctuation back on the
+    word timings). Within a sentence a cue is closed at a clause break (comma,
+    dash, colon) when it is already long enough, so the split lands somewhere a
+    reader expects rather than mid-phrase.
+    """
     groups: list[list[dict]] = []
     cur: list[dict] = []
     for w in words:
         cur.append(w)
+        text = str(w.get("word", "")).strip()
         span = (w.get("end", 0) or 0) - (cur[0].get("start", 0) or 0)
-        ends_sentence = str(w.get("word", "")).strip()[-1:] in ".!?"
-        if len(cur) >= _MAX_WORDS_PER_CUE or span >= _MAX_SECONDS_PER_CUE or ends_sentence:
+        ends_sentence = text[-1:] in ".!?…"
+        ends_clause = text[-1:] in ",;:—–"
+        full = len(cur) >= _MAX_WORDS_PER_CUE or span >= _MAX_SECONDS_PER_CUE
+        if ends_sentence or full or (ends_clause and len(cur) >= _MIN_WORDS_BEFORE_CLAUSE_BREAK):
             groups.append(cur)
             cur = []
     if cur:

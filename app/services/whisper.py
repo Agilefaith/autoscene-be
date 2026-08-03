@@ -1,4 +1,5 @@
-import httpx
+import re
+
 from openai import AsyncOpenAI
 from app.core.config import get_settings
 
@@ -29,14 +30,39 @@ async def transcribe(audio_path: str, vocabulary: list[str] | None = None) -> di
             **kwargs,
         )
 
+    words = [{"word": w.word, "start": w.start, "end": w.end} for w in (response.words or [])]
     return {
         "text": response.text,
-        "segments": [
-            {
-                "word": w.word,
-                "start": w.start,
-                "end": w.end,
-            }
-            for w in (response.words or [])
-        ],
+        "segments": _restore_punctuation(words, response.text or ""),
     }
+
+
+def _restore_punctuation(words: list[dict], text: str) -> list[dict]:
+    """Re-attach punctuation from the full transcript onto the word timings.
+
+    Whisper's word-level output strips punctuation ("below", not "below."), while
+    the full text keeps it. Subtitle cues break on sentence ends, so without this
+    a cue runs straight through a full stop and reads "meet One winter a"
+    (Faith, 2026-08-03). Timings are untouched; only the text gains its
+    punctuation back. Falls back to the unpunctuated words if the two streams
+    drift apart.
+    """
+    tokens = text.split()
+    if not words or not tokens:
+        return words
+
+    def bare(s: str) -> str:
+        return re.sub(r"[^\w']+", "", s).lower()
+
+    out: list[dict] = []
+    ti = 0
+    for w in words:
+        target = bare(w["word"])
+        # tolerate the odd extra/missing token between the two streams
+        for probe in range(ti, min(ti + 3, len(tokens))):
+            if bare(tokens[probe]) == target:
+                w = {**w, "word": tokens[probe]}
+                ti = probe + 1
+                break
+        out.append(w)
+    return out
