@@ -138,7 +138,10 @@ class Settings(BaseSettings):
     # ── AutoScene scene defaults (config-driven) ──────────────────────────────
     scene_duration_seconds: int = 10          # PRD / Faith: split script into ~10s scenes
     scene_min_count: int = 1
-    scene_max_count: int = 240                 # supports up to 40-min videos
+    # 40 min at 10s = 240 scenes; stanza-cut niches produce far more (a 40-min
+    # script can run ~600 two-line stanzas), and hitting the cap silently
+    # stretched scenes well past their target length.
+    scene_max_count: int = 600
     # Max scenes requested per OpenAI breakdown call. Long scripts are split into
     # several chunks so one response never overflows the model's output-token cap
     # (which truncates the JSON → "Unterminated string" parse failure). Mode 2

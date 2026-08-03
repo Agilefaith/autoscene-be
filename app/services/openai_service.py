@@ -129,6 +129,27 @@ def _creative_brief(
         f"STYLE — {style}: {style_guidance}\n"
         f"GOAL — {goal}: {goal_guidance}\n"
         f"TONE — keep it {tone_desc} throughout.\n"
+        f"{_stanza_format_brief(niche)}"
+    )
+
+
+# Faith's high-retention format (2026-08-03): for these niches the script must be
+# written as two-line stanzas, because each stanza becomes one scene and one image
+# (see scene_engine.split_into_stanzas). Long flowing paragraphs would collapse
+# several beats into a single image.
+def _stanza_format_brief(niche: str) -> str:
+    from app.services.scene_engine import uses_stanza_split
+    if not uses_stanza_split(niche):
+        return ""
+    return (
+        "FORMAT — high-retention short lines (MANDATORY for this niche):\n"
+        "Write the script as short punchy lines grouped into TWO-LINE stanzas, with a "
+        "blank line between stanzas. Each line is a short sentence of roughly 4-10 words. "
+        "Never write long flowing paragraphs. Example of the required shape:\n"
+        "Your brain is lying to you.\n"
+        "And you believe it every day.\n\n"
+        "You think you're not good enough.\n"
+        "That's a story. Not a fact.\n"
     )
 
 
