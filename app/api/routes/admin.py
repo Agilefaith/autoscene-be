@@ -91,18 +91,17 @@ async def create_invite(body: InviteRequest, admin: CurrentAdmin):
 
     user_id = getattr(getattr(invited, "user", None), "id", None)
     plan = PLANS[body.plan_id]
-    if user_id:
-        # Provision the account up front so the invitee lands on the right plan.
-        client.table("users").upsert({
-            "id": user_id, "email": email, "role": "user",
-            "user_type": "trial" if body.plan_id == "free" else "standard",
-            "plan_tier": body.plan_id,
-        }).execute()
-        client.table("credits").upsert({
-            "user_id": user_id,
-            "balance": plan.videos_per_month,
-            "monthly_quota": plan.videos_per_month,
-        }).execute()
+    try:
+        _provision(client, user_id, email, body.plan_id, plan)
+    except Exception as e:
+        # Roll the auth user back, or the address is stuck as "already registered".
+        if user_id:
+            try:
+                client.auth.admin.delete_user(user_id)
+            except Exception:
+                pass
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail=f"Could not provision the account: {str(e)[:200]}")
 
     row = client.table("invites").insert({
         "email": email,
@@ -112,6 +111,29 @@ async def create_invite(body: InviteRequest, admin: CurrentAdmin):
         "user_id": user_id,
     }).execute().data[0]
     return row
+
+
+def _provision(client, user_id: str | None, email: str, plan_id: str, plan) -> None:
+    """Create the invitee's row and quota so their plan is live on first sign-in.
+
+    `credits` is upserted on `user_id` because that is where its unique constraint
+    lives; upserting on the primary key instead raises a duplicate-key error for
+    anyone who already has a credits row.
+    """
+    if not user_id:
+        return
+    client.table("users").upsert({
+        "id": user_id,
+        "email": email,
+        "role": "user",
+        "user_type": "trial" if plan_id == "free" else "standard",
+        "plan_tier": plan_id,
+    }).execute()
+    client.table("credits").upsert({
+        "user_id": user_id,
+        "balance": plan.videos_per_month,
+        "monthly_quota": plan.videos_per_month,
+    }, on_conflict="user_id").execute()
 
 
 @router.post("/invites/{invite_id}/revoke", response_model=InviteResponse)
@@ -181,7 +203,7 @@ async def set_user_plan(user_id: str, body: PlanChange, _admin: CurrentAdmin):
         "user_id": user_id,
         "balance": plan.videos_per_month,
         "monthly_quota": plan.videos_per_month,
-    }).execute()
+    }, on_conflict="user_id").execute()
     return updated[0]
 
 
