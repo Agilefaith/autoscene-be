@@ -5,11 +5,12 @@ from app.core.celery_app import celery_app
 from app.core.config import PLANS
 
 
-def test_three_paid_tiers_are_ordered():
-    # Scale (priority) < Creator (faster) < Starter (standard) < free — lower drains first.
-    assert PLAN_PRIORITY["scale"] < PLAN_PRIORITY["creator"] < PLAN_PRIORITY["starter"] < PLAN_PRIORITY["free"]
-    assert PLAN_PRIORITY["scale_m2"] == PLAN_PRIORITY["scale"]
-    assert PLAN_PRIORITY["creator_m2"] == PLAN_PRIORITY["creator"]
+def test_paid_tiers_are_ordered():
+    # Pro/Scale (priority) < Creator (faster) < Starter (standard) — lower drains
+    # first. Anyone without a live subscription falls back to PRIORITY_FREE.
+    assert PLAN_PRIORITY["scale"] == PLAN_PRIORITY["pro"]
+    assert PLAN_PRIORITY["scale"] < PLAN_PRIORITY["creator"] < PLAN_PRIORITY["starter"]
+    assert PLAN_PRIORITY["starter"] < PRIORITY_FREE
 
 
 def test_every_plan_has_a_priority_within_broker_steps():

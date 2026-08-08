@@ -26,9 +26,11 @@ async def test_admin_is_allowed_through():
     assert await require_admin(user) is user
 
 
-def test_invite_defaults_to_the_free_plan():
+def test_invite_defaults_to_a_real_plan():
+    # There is no free tier any more (Faith, 2026-08-05), so the default has to
+    # be a plan that actually exists in the catalog.
     req = InviteRequest(email="someone@example.com")
-    assert req.plan_id == "free"
+    assert req.plan_id == "starter"
     assert req.plan_id in PLANS
 
 

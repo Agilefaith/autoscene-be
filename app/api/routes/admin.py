@@ -19,7 +19,7 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 class InviteRequest(BaseModel):
     email: EmailStr
-    plan_id: str = "free"
+    plan_id: str = "starter"
 
 
 class InviteResponse(BaseModel):
@@ -126,13 +126,13 @@ def _provision(client, user_id: str | None, email: str, plan_id: str, plan) -> N
         "id": user_id,
         "email": email,
         "role": "user",
-        "user_type": "trial" if plan_id == "free" else "standard",
+        "user_type": "standard",
         "plan_tier": plan_id,
     }).execute()
     client.table("credits").upsert({
         "user_id": user_id,
-        "balance": plan.videos_per_month,
-        "monthly_quota": plan.videos_per_month,
+        "balance": plan.credits_per_month,
+        "monthly_quota": plan.credits_per_month,
     }, on_conflict="user_id").execute()
 
 
@@ -194,15 +194,15 @@ async def set_user_plan(user_id: str, body: PlanChange, _admin: CurrentAdmin):
     updated = (
         client.table("users").update({
             "plan_tier": body.plan_id,
-            "user_type": "trial" if body.plan_id == "free" else "standard",
+            "user_type": "standard",
         }).eq("id", user_id).execute().data
     )
     if not updated:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     client.table("credits").upsert({
         "user_id": user_id,
-        "balance": plan.videos_per_month,
-        "monthly_quota": plan.videos_per_month,
+        "balance": plan.credits_per_month,
+        "monthly_quota": plan.credits_per_month,
     }, on_conflict="user_id").execute()
     return updated[0]
 
@@ -211,8 +211,7 @@ async def set_user_plan(user_id: str, body: PlanChange, _admin: CurrentAdmin):
 async def list_plans(_admin: CurrentAdmin):
     """Plan options for the invite form."""
     return [
-        {"id": p.id, "name": p.name, "price_usd": p.price_usd,
-         "videos_per_month": p.videos_per_month,
-         "max_minutes": p.max_duration_seconds // 60}
+        {"id": p.id, "name": p.name, "price_ngn": p.price_ngn,
+         "credits_per_month": p.credits_per_month}
         for p in PLANS.values()
     ]

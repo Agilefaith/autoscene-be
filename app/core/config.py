@@ -5,30 +5,47 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Plan:
-    """A subscription plan (config-driven). Quota is by NUMBER OF VIDEOS per
-    month plus a MAX DURATION per video and the render modes it unlocks. Hard
-    limits, no rollover, monthly reset — per the AutoScene billing model."""
+    """A subscription plan (config-driven).
+
+    Billing is in CREDITS, where one credit is one minute of finished video
+    (Faith, 2026-08-05). Plan credits are a monthly allowance with no rollover;
+    separately-purchased top-up credits do not expire (see TOPUP_PACKS and the
+    credits table's topup_balance). Prices are in Naira because the Paystack
+    account settles in NGN and cannot charge USD.
+    """
     id: str
     name: str
-    price_usd: int
-    videos_per_month: int
-    max_duration_seconds: int
-    allowed_modes: tuple[str, ...]
-    variant_env: str  # Settings attr holding the Lemon Squeezy variant id ("" = free)
+    price_ngn: int              # monthly price in whole Naira
+    credits_per_month: int      # 1 credit = 1 minute of video
+    queue_priority: int         # Celery priority; lower drains first
+    plan_code_env: str          # Settings attr holding the Paystack plan code
 
 
-# The AutoScene plan catalog (config-driven). Prices/quotas/caps mirror the
-# agreed pricing structure; Lemon Squeezy variant ids come from the environment.
+@dataclass(frozen=True)
+class TopupPack:
+    """A one-off Pay-As-You-Go credit purchase. Not a subscription: it is a single
+    charge that adds credits which never expire."""
+    id: str
+    credits: int
+    price_ngn: int
+
+
+# The AutoScene plan catalog (config-driven). The free tier and both Mode 2 plans
+# were removed on Faith's instruction (2026-08-05); Mode 1 is the only render mode.
 PLANS: dict[str, "Plan"] = {
-    "free":       Plan("free", "Free Trial", 0, 1, 30, ("mode_1",), ""),
-    "starter":    Plan("starter", "Starter", 7, 10, 900, ("mode_1",), "lemonsqueezy_starter_variant_id"),
-    "creator":    Plan("creator", "Creator", 18, 30, 1200, ("mode_1",), "lemonsqueezy_creator_variant_id"),
-    "scale":      Plan("scale", "Scale", 28, 65, 1800, ("mode_1",), "lemonsqueezy_scale_variant_id"),
-    "creator_m2": Plan("creator_m2", "Creator Mode 2", 25, 20, 1200, ("mode_1", "mode_2"), "lemonsqueezy_creator_m2_variant_id"),
-    "scale_m2":   Plan("scale_m2", "Scale Mode 2", 47, 50, 1500, ("mode_1", "mode_2"), "lemonsqueezy_scale_m2_variant_id"),
+    "starter": Plan("starter", "Starter",  22_400,  20, 4, "paystack_starter_plan_code"),
+    "creator": Plan("creator", "Creator",  57_400,  60, 2, "paystack_creator_plan_code"),
+    "pro":     Plan("pro",     "Pro",     129_400, 150, 0, "paystack_pro_plan_code"),
+    "scale":   Plan("scale",   "Scale",   260_400, 350, 0, "paystack_scale_plan_code"),
 }
-# Paid plans that get premium-level rate limits / concurrency.
-_PREMIUM_PLANS = {"scale", "scale_m2"}
+
+TOPUP_PACKS: dict[str, "TopupPack"] = {
+    "topup_80":  TopupPack("topup_80",   80,  96_000),
+    "topup_180": TopupPack("topup_180", 180, 176_000),
+}
+
+# Plans that get premium-level rate limits / concurrency.
+_PREMIUM_PLANS = {"pro", "scale"}
 
 
 class Settings(BaseSettings):
@@ -107,26 +124,23 @@ class Settings(BaseSettings):
     backblaze_endpoint_url: str
     backblaze_region: str
 
-    # ── Lemon Squeezy ─────────────────────────────────────────────────────────
-    lemonsqueezy_api_key: str = ""
-    lemonsqueezy_store_id: str = ""
-    lemonsqueezy_webhook_secret: str = ""
-    # Subscription variant ids (create one monthly product per plan in LS).
-    lemonsqueezy_starter_variant_id: str = ""
-    lemonsqueezy_creator_variant_id: str = ""
-    lemonsqueezy_scale_variant_id: str = ""
-    lemonsqueezy_creator_m2_variant_id: str = ""
-    lemonsqueezy_scale_m2_variant_id: str = ""
+    # ── Paystack (replaced Lemon Squeezy, 2026-08-05) ─────────────────────────
+    # The account settles in NGN and cannot charge USD, so all pricing is Naira.
+    paystack_secret_key: str = ""
+    paystack_public_key: str = ""
+    # Paystack signs webhooks with the SECRET key (HMAC-SHA512), so there is no
+    # separate webhook secret to configure.
+    # Subscription plan codes, created once in Paystack (scripts/paystack_setup.py).
+    paystack_starter_plan_code: str = ""
+    paystack_creator_plan_code: str = ""
+    paystack_pro_plan_code: str = ""
+    paystack_scale_plan_code: str = ""
+    # Where Paystack sends the customer back after checkout.
+    paystack_callback_url: str = ""
 
-    # ── Billing / quota config (config-driven) ────────────────────────────────
-    # Billing is a per-month VIDEO QUOTA (see PLANS). Each generated video costs
-    # 1 quota unit regardless of duration/mode (duration + mode are gated per
-    # plan instead). The multiplier below is kept only for the internal COST
-    # metric (Mode 2 renders ~3x the images of Mode 1).
-    credit_seconds_per_unit: int = 30
-    trial_initial_credits: int = 1
-    mode_1_credit_multiplier: int = 1
-    mode_2_credit_multiplier: int = 3          # internal cost metric only
+    # ── Billing config (config-driven) ────────────────────────────────────────
+    # One credit = one minute of finished video, rounded up: a 90s video costs 2.
+    seconds_per_credit: int = 60
 
     # ── Script generation (config-driven) ─────────────────────────────────────
     # Spoken delivery rate: sizes generated scripts AND estimates how long an
@@ -191,23 +205,17 @@ class Settings(BaseSettings):
     celery_fast_concurrency: int = 10
     celery_media_concurrency: int = 4
 
-    def mode_multiplier(self, render_mode: str) -> int:
-        """Internal COST-metric multiplier for a render mode (mode_1 / mode_2).
-        Not used for billing — billing is a per-video quota (see PLANS)."""
-        if render_mode == "mode_2":
-            return self.mode_2_credit_multiplier
-        return self.mode_1_credit_multiplier
+    def credits_for(self, duration_seconds: int) -> int:
+        """Credits a video costs: one per started minute (90s costs 2)."""
+        import math
+        return max(1, math.ceil(max(1, duration_seconds) / self.seconds_per_credit))
 
     def rate_per_min(self, plan_tier: str) -> int:
-        if plan_tier == "free":
-            return self.rate_per_min_free
         if plan_tier in _PREMIUM_PLANS:
             return self.rate_per_min_premium
         return self.rate_per_min_pro
 
     def max_concurrent(self, plan_tier: str) -> int:
-        if plan_tier == "free":
-            return self.max_concurrent_free
         if plan_tier in _PREMIUM_PLANS:
             return self.max_concurrent_premium
         return self.max_concurrent_pro
@@ -219,25 +227,24 @@ class Settings(BaseSettings):
         return bool(self.scene_transition) and 1 < scene_count <= self.scene_transition_max_scenes
 
     # ── Plan catalog helpers ──────────────────────────────────────────────────
-    def plan(self, plan_id: str) -> "Plan":
-        """Return the Plan for a plan id, falling back to the free plan."""
-        return PLANS.get(plan_id, PLANS["free"])
+    def plan(self, plan_id: str) -> "Plan | None":
+        """The Plan for a plan id, or None. There is no free tier to fall back to
+        any more, so callers must handle an unsubscribed user explicitly."""
+        return PLANS.get(plan_id)
 
-    def plan_variant_id(self, plan_id: str) -> str:
-        """Lemon Squeezy variant id configured for a plan ("" if none)."""
+    def plan_code(self, plan_id: str) -> str:
+        """Paystack plan code configured for a plan ("" if not yet created)."""
         p = PLANS.get(plan_id)
-        if not p or not p.variant_env:
-            return ""
-        return str(getattr(self, p.variant_env, "") or "")
+        return str(getattr(self, p.plan_code_env, "") or "") if p else ""
 
-    def plan_for_variant(self, variant_id: str | int) -> str:
-        """Map a Lemon Squeezy variant id back to our plan id (free if unknown)."""
-        vid = str(variant_id)
-        if vid:
+    def plan_for_code(self, plan_code: str) -> str | None:
+        """Map a Paystack plan code back to our plan id."""
+        code = str(plan_code or "")
+        if code:
             for pid, p in PLANS.items():
-                if p.variant_env and str(getattr(self, p.variant_env, "") or "") == vid:
+                if str(getattr(self, p.plan_code_env, "") or "") == code:
                     return pid
-        return "free"
+        return None
 
 
 @lru_cache

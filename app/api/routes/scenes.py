@@ -59,7 +59,7 @@ async def regenerate_scene_image(scene_id: str, user_id: CurrentUserId, user: Cu
     # Rate limit by plan tier (skip internal) — each regen is a paid SDXL call.
     if user.get("user_type") != "internal":
         from app.services.ratelimit import check_request_rate
-        if not check_request_rate(user_id, user.get("plan_tier", "free")):
+        if not check_request_rate(user_id, user.get("plan_tier") or ""):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="You're regenerating images too quickly. Please wait a moment and try again.",

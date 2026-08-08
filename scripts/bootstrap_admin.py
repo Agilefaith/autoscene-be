@@ -51,7 +51,7 @@ def main() -> int:
         "email": email,
         "role": "admin",
         "user_type": "internal",   # the administrator is not billed
-        "plan_tier": "scale_m2",   # highest tier, so admin testing is never gated
+        "plan_tier": "scale",      # highest tier, so admin testing is never gated
     }).execute()
 
     print(f"admin ready: {email} ({user_id})")
