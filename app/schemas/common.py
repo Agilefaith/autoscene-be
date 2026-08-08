@@ -126,12 +126,36 @@ SDXL_DIMENSIONS: dict[str, tuple[int, int]] = {
     "1:1":  (1024, 1024),
 }
 
-# Final render canvas (FFmpeg output) per format.
+# Final render canvas (FFmpeg output) per format, keyed on the SHORT edge. 1080
+# is the standard output; 1440 is the "higher resolution" the Pro and Scale plans
+# promise (Faith, 2026-08-06).
+#
+# Every 1440 canvas is exactly 4/3 of its 1080 counterpart in BOTH dimensions, so
+# anything sized against the canvas scales proportionally and needs no change —
+# that is why the subtitle PlayRes in ffmpeg_subs can stay on the 1080 grid and
+# still render captions at the same relative size.
 RENDER_DIMENSIONS: dict[str, tuple[int, int]] = {
     "16:9": (1920, 1080),
     "9:16": (1080, 1920),
     "1:1":  (1080, 1080),
 }
+
+RENDER_DIMENSIONS_HD: dict[str, tuple[int, int]] = {
+    "16:9": (2560, 1440),
+    "9:16": (1440, 2560),
+    "1:1":  (1440, 1440),
+}
+
+
+def render_dimensions(fmt: str, short_edge: int = 1080) -> tuple[int, int]:
+    """Output canvas for a format at the given short edge (1080 or 1440).
+
+    The source images are ~1024px, so 1440 is an upscale rather than new detail.
+    It still helps in practice: YouTube gives 1440p uploads a better codec than
+    1080p, so the delivered stream is visibly cleaner.
+    """
+    table = RENDER_DIMENSIONS_HD if short_edge >= 1440 else RENDER_DIMENSIONS
+    return table.get(fmt, table["9:16"])
 
 # ── Visual styles (the four Faith specified — 2026-07 style prompt PDF) ───────
 # `prompt` is Faith's STYLE BLOCK, used exactly as written (her spec: embed it at

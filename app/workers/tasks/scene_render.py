@@ -18,7 +18,7 @@ from app.core.config import get_settings
 from app.services.supabase import get_supabase_client
 from app.services.backblaze import upload_video
 from app.services import ffmpeg_scene
-from app.schemas.common import RENDER_DIMENSIONS, SCENE_MOTIONS
+from app.schemas.common import SCENE_MOTIONS, render_dimensions
 from app.workers.tasks.project_common import (
     log_event, update_project, get_project, get_scenes, friendly_error,
     is_cancelled, refund_on_final_failure,
@@ -48,7 +48,10 @@ def _motions_for(scene: dict, n_images: int) -> list[str]:
 def _render_one(scene: dict, project: dict, tmpdir: str, tail: float = 0.0) -> str:
     """Render a scene clip and return its uploaded URL. `tail` extends the clip so
     scene-to-scene crossfades can consume it without shortening the timeline."""
-    w, h = RENDER_DIMENSIONS.get(project["format"], (1080, 1920))
+    # The canvas is stamped on the project at generate time so every scene in a
+    # render agrees on it, even if the user's plan changes mid-render.
+    w, h = render_dimensions(project["format"],
+                             project.get("render_height") or settings.render_short_edge)
     image_urls = scene.get("image_urls") or []
     if not image_urls:
         raise RuntimeError(f"scene {scene['idx']} has no images")

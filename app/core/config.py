@@ -47,6 +47,11 @@ TOPUP_PACKS: dict[str, "TopupPack"] = {
 # Plans that get premium-level rate limits / concurrency.
 _PREMIUM_PLANS = {"pro", "scale"}
 
+# Plans whose "better quality" promise means a higher-resolution render
+# (Faith, 2026-08-06). Same set as premium today, kept separate so the two can
+# diverge without one silently changing the other.
+_HD_RENDER_PLANS = {"pro", "scale"}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -142,6 +147,12 @@ class Settings(BaseSettings):
     # One credit = one minute of finished video, rounded up: a 90s video costs 2.
     seconds_per_credit: int = 60
 
+    # ── Output resolution (config-driven) ─────────────────────────────────────
+    # Short edge of the render canvas. Pro and Scale get the HD value, which is
+    # the "better quality / higher resolution" those plans advertise.
+    render_short_edge: int = 1080
+    render_short_edge_hd: int = 1440
+
     # ── Script generation (config-driven) ─────────────────────────────────────
     # Spoken delivery rate: sizes generated scripts AND estimates how long an
     # arbitrary script reads aloud. Single source of truth for WPM.
@@ -209,6 +220,11 @@ class Settings(BaseSettings):
         """Credits a video costs: one per started minute (90s costs 2)."""
         import math
         return max(1, math.ceil(max(1, duration_seconds) / self.seconds_per_credit))
+
+    def render_short_edge_for(self, plan_tier: str) -> int:
+        """Short edge of the output canvas for a plan (1080, or 1440 on Pro/Scale)."""
+        return (self.render_short_edge_hd if plan_tier in _HD_RENDER_PLANS
+                else self.render_short_edge)
 
     def rate_per_min(self, plan_tier: str) -> int:
         if plan_tier in _PREMIUM_PLANS:
