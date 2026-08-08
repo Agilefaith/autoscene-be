@@ -9,6 +9,7 @@ from app.schemas.project import (
     ProjectCreate, ProjectUpdate, ProjectGenerateRequest,
     ProjectResponse, ProjectDetailResponse,
 )
+from app.schemas.scene import ScenePromptsUpdate
 from app.services.supabase import get_supabase_client
 from app.services.credits import calculate_project_credits, consume_credits
 from app.services.openai_service import estimate_duration_seconds
@@ -158,6 +159,46 @@ async def run_breakdown(project_id: str, user_id: CurrentUserId):
     return {"project_id": project_id, "status": "scene_breakdown"}
 
 
+@router.put("/{project_id}/scene-prompts")
+async def save_scene_prompts(
+    project_id: str, body: ScenePromptsUpdate, user_id: CurrentUserId
+):
+    """Save the manual image prompt for every scene in one call.
+
+    The user writes (or bulk-pastes) a prompt per scene before generating, and
+    the renderer uses that text exactly as given. Scenes are addressed by `idx`
+    rather than id so a bulk paste can be mapped straight onto scene order.
+    """
+    project = _owned_project(project_id, user_id, "id, status")
+    if project["status"] in ACTIVE_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot edit prompts while the video is rendering.",
+        )
+
+    client = get_supabase_client()
+    scenes = (
+        client.table("scenes").select("id, idx")
+        .eq("project_id", project_id).eq("user_id", user_id).execute().data or []
+    )
+    by_idx = {s["idx"]: s["id"] for s in scenes}
+
+    unknown = [e.idx for e in body.prompts if e.idx not in by_idx]
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"This project has no scene at position {unknown[0] + 1}.",
+        )
+
+    for entry in body.prompts:
+        client.table("scenes").update(
+            {"user_prompt": entry.user_prompt.strip() or None}
+        ).eq("id", by_idx[entry.idx]).execute()
+
+    filled = sum(1 for e in body.prompts if e.user_prompt.strip())
+    return {"project_id": project_id, "scenes": len(scenes), "prompts_saved": filled}
+
+
 @router.post("/{project_id}/generate", status_code=status.HTTP_202_ACCEPTED)
 async def generate_project(
     project_id: str,
@@ -221,6 +262,31 @@ async def generate_project(
         else project["duration_seconds"]
     )
 
+    # Every scene needs a manual image prompt (Faith, 2026-08-06). AI-written
+    # prompts drifted from the narration, so the user writes them and the
+    # renderer uses that text verbatim. Checked here rather than in the worker so
+    # the user is told before any credits are charged.
+    scene_rows = (
+        client.table("scenes").select("idx, user_prompt")
+        .eq("project_id", project_id).order("idx").execute().data or []
+    )
+    if not scene_rows:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Break the script into scenes before generating.",
+        )
+    missing = [r["idx"] + 1 for r in scene_rows if not (r.get("user_prompt") or "").strip()]
+    if missing:
+        shown = ", ".join(str(i) for i in missing[:5])
+        more = f" and {len(missing) - 5} more" if len(missing) > 5 else ""
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"{len(missing)} scene(s) still need an image prompt: {shown}{more}. "
+                "Add a prompt for every scene, then generate."
+            ),
+        )
+
     # Billing is per minute (Faith, 2026-08-05): the plan's credits are what caps
     # length, so there is no separate per-plan duration or render-mode gate.
     credits = calculate_project_credits(duration_seconds)
@@ -233,8 +299,13 @@ async def generate_project(
             ),
         )
 
-    # Persist the resolved duration, then atomically charge the credits + flip to pending.
-    client.table("projects").update({"duration_seconds": duration_seconds}).eq("id", project_id).execute()
+    # Persist the resolved duration and the output canvas this render is entitled
+    # to, then atomically charge the credits + flip to pending. Stamping the
+    # canvas here keeps every scene consistent even if the plan changes mid-render.
+    client.table("projects").update({
+        "duration_seconds": duration_seconds,
+        "render_height": settings.render_short_edge_for(plan_tier),
+    }).eq("id", project_id).execute()
     if is_internal:
         client.table("projects").update({
             "status": "pending", "credits_used": 0, "request_id": body.request_id, "error_message": None,

@@ -30,8 +30,17 @@ _MAX_CONCURRENCY = 4
 
 def _prompts_for(scene: dict) -> list[str]:
     """The prompt list to render for a scene. Mode 1 is the only render mode
-    (Faith, 2026-08-05), so this is always the scene's single image prompt."""
-    return [scene.get("image_prompt") or ""]
+    (Faith, 2026-08-05), so this is always a single prompt.
+
+    The user's own prompt wins and is used EXACTLY as they wrote it — no style
+    block or lock line appended (Faith, 2026-08-06). That is the whole point of
+    the manual override: AI-rewritten prompts were drifting from the narration.
+    Character reference images are still attached separately, so identity lock
+    keeps working without touching their text. The AI prompt remains the
+    fallback for projects created before the override existed.
+    """
+    user_prompt = (scene.get("user_prompt") or "").strip()
+    return [user_prompt or scene.get("image_prompt") or ""]
 
 
 def _fetch_reference(url: str | None) -> bytes | None:
