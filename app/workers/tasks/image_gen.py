@@ -17,6 +17,7 @@ from app.services.stability import generate_image, ContentFilteredError
 from app.services.gemini_image import generate_image_gemini, GeminiCreditsDepletedError
 from app.services.backblaze import upload_bytes
 from app.schemas.common import style_sdxl_preset, style_negative
+from app.services.scene_engine import decorate_user_prompt
 from app.workers.tasks.project_common import (
     log_event, update_project, get_project, get_scenes, friendly_error,
     is_cancelled, refund_on_final_failure,
@@ -28,19 +29,24 @@ settings = get_settings()
 _MAX_CONCURRENCY = 4
 
 
-def _prompts_for(scene: dict) -> list[str]:
+def _prompts_for(scene: dict, style: str = "") -> list[str]:
     """The prompt list to render for a scene. Mode 1 is the only render mode
     (Faith, 2026-08-05), so this is always a single prompt.
 
-    The user's own prompt wins and is used EXACTLY as they wrote it — no style
-    block or lock line appended (Faith, 2026-08-06). That is the whole point of
-    the manual override: AI-rewritten prompts were drifting from the narration.
-    Character reference images are still attached separately, so identity lock
-    keeps working without touching their text. The AI prompt remains the
-    fallback for projects created before the override existed.
+    The user's own prompt wins and describes the scene verbatim; the project's
+    style block and the lock line are appended to it exactly as they are to an AI
+    prompt. Only the scene DESCRIPTION was ever the problem — the suffixes are
+    what keep a video visually consistent and free of split panels, so stripping
+    them let one video mix photoreal and cartoon shots.
+
+    Character reference images are attached separately, so identity lock works
+    without touching the prompt text. The AI prompt (already decorated at
+    breakdown time) remains the fallback for older projects.
     """
     user_prompt = (scene.get("user_prompt") or "").strip()
-    return [user_prompt or scene.get("image_prompt") or ""]
+    if user_prompt:
+        return [decorate_user_prompt(user_prompt, style)]
+    return [scene.get("image_prompt") or ""]
 
 
 def _fetch_reference(url: str | None) -> bytes | None:
@@ -110,7 +116,7 @@ async def _generate_scene_images(scene: dict, project: dict, sem: asyncio.Semaph
     sdxl_preset = style_sdxl_preset(project.get("style") or "")
     negative = style_negative(project.get("style") or "")
     seed = int(scene.get("seed") or 0)
-    prompts = _prompts_for(scene)
+    prompts = _prompts_for(scene, project.get("style") or "")
 
     urls: list[str] = []
     engines: list[dict] = []

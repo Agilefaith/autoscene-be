@@ -203,6 +203,28 @@ def _decorate(prompt: str, style_text: str) -> str:
     return f"{p}. {style}. {_LOCK_LINE}"
 
 
+def decorate_user_prompt(prompt: str, style: str) -> str:
+    """Wrap a prompt the USER wrote in the same style block and lock line the AI
+    prompts get (Faith, 2026-08-06).
+
+    Only the scene description is theirs to write — that is the part whose AI
+    interpretation was drifting from the narration. The two suffixes are not
+    interpretation:
+
+      * the style block is what makes every scene in a video share one visual
+        language, and what makes the Video Style picker mean anything;
+      * the lock line is the guard against split panels, collages and borders.
+
+    Dropping them made each scene look like whatever its prompt happened to
+    imply, so a video could mix photoreal and cartoon shots. Their words are
+    still used verbatim and nothing is rewritten or removed.
+    """
+    text = (prompt or "").strip()
+    if not text:
+        return ""
+    return _decorate(text, style_prompt(style or ""))
+
+
 async def breakdown_script(
     script: str,
     *,
