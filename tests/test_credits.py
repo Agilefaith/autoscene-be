@@ -1,44 +1,47 @@
-"""
-Tests untuk AutoScene cost-metric formula:
-  units = ceil(duration_seconds / 30) × mode_multiplier
-  Mode 1 multiplier = 1, Mode 2 multiplier = 3 (config-driven).
-  NOTE: billing is now a per-video quota (see consume_video_quota); this formula
-  only feeds the internal cost metric (Mode 2 renders ~3x the images of Mode 1).
+"""Credit costing.
+
+Billing is in minutes (Faith, 2026-08-05): one credit buys one minute of
+finished video, and any started minute is charged in full. There is no
+render-mode multiplier any more — Mode 1 is the only mode.
 """
 import pytest
+
+from app.core.config import PLANS, TOPUP_PACKS, get_settings
 from app.services.credits import calculate_project_credits
 
 
-@pytest.mark.parametrize("duration, mode, expected", [
-    # Mode 1 (multiplier=1)
-    (30,  "mode_1", 1),   # 1 unit × 1
-    (60,  "mode_1", 2),   # 2 units × 1
-    (45,  "mode_1", 2),   # ceil(45/30)=2 × 1
-    (1,   "mode_1", 1),   # ceil(1/30)=1 × 1 — minimum 1 unit
-    (90,  "mode_1", 3),   # 3 units × 1
-    (120, "mode_1", 4),   # 4 units × 1
-    # Mode 2 (multiplier=3)
-    (30,  "mode_2", 3),   # 1 unit × 3
-    (60,  "mode_2", 6),   # 2 units × 3
-    (45,  "mode_2", 6),   # ceil(45/30)=2 × 3
-    (1,   "mode_2", 3),   # ceil(1/30)=1 × 3 — minimum 1 unit
-    (90,  "mode_2", 9),   # 3 units × 3
-    (120, "mode_2", 12),  # 4 units × 3
+@pytest.mark.parametrize("duration, expected", [
+    (1,    1),   # anything at all costs a full minute
+    (30,   1),
+    (60,   1),
+    (61,   2),   # a started minute is charged in full
+    (90,   2),
+    (120,  2),
+    (1800, 30),  # 30 min
+    (2400, 40),  # 40 min — the hard ceiling
 ])
-def test_calculate_project_credits(duration, mode, expected):
-    assert calculate_project_credits(duration, mode) == expected
+def test_calculate_project_credits(duration, expected):
+    assert calculate_project_credits(duration) == expected
 
 
-def test_unknown_mode_defaults_to_mode_1():
-    """Mode yang tidak dikenal harus fallback ke multiplier Mode 1 (=1)."""
-    assert calculate_project_credits(30, "unknown_mode") == 1
+def test_credits_are_always_positive():
+    assert calculate_project_credits(0) >= 1
+    assert calculate_project_credits(1) >= 1
 
 
-def test_credits_always_positive():
-    """Credits tidak boleh nol atau negatif."""
-    assert calculate_project_credits(1, "mode_1") > 0
-    assert calculate_project_credits(1, "mode_2") > 0
+def test_a_plan_covers_its_advertised_minutes():
+    """credits_per_month doubles as minutes-per-month, so the arithmetic has to
+    line up: a 20-credit plan buys exactly one 20-minute video."""
+    for plan in PLANS.values():
+        assert calculate_project_credits(plan.credits_per_month * 60) == plan.credits_per_month
 
 
-def test_modes_have_different_costs():
-    assert calculate_project_credits(30, "mode_1") != calculate_project_credits(30, "mode_2")
+def test_the_catalog_has_no_free_tier():
+    assert "free" not in PLANS
+    assert get_settings().plan("free") is None
+
+
+def test_topup_packs_are_well_formed():
+    assert TOPUP_PACKS
+    for pack in TOPUP_PACKS.values():
+        assert pack.credits > 0 and pack.price_ngn > 0

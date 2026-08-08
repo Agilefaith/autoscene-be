@@ -4,41 +4,49 @@ from app.core.config import get_settings
 settings = get_settings()
 
 
-def calculate_project_credits(duration_seconds: int, render_mode: str) -> int:
-    """credits = ceil(duration / 30) × mode_multiplier (AutoScene, config-driven)."""
-    import math
-    units = math.ceil(duration_seconds / settings.credit_seconds_per_unit)
-    multiplier = settings.mode_multiplier(render_mode)
-    return units * multiplier
+def calculate_project_credits(duration_seconds: int) -> int:
+    """Credits a render costs: one per started minute of video (config-driven).
+
+    Faith, 2026-08-05: billing is in minutes, so a 20-minute video costs 20 of a
+    plan's credits. There is no render-mode multiplier any more — Mode 1 is the
+    only mode.
+    """
+    return settings.credits_for(duration_seconds)
 
 
-def consume_video_quota(user_id: str, project_id: str, request_id: str) -> dict:
-    """Atomically consume 1 video from the user's monthly quota and flip an
-    existing draft project to 'pending'. Applies the no-rollover monthly reset
-    and raises ValueError when the quota is exhausted.
-    Uses the consume_video_quota_atomic stored procedure for atomicity."""
+def consume_credits(user_id: str, project_id: str, request_id: str, credits: int) -> dict:
+    """Atomically charge a render's credits and flip an existing draft project to
+    'pending'. Applies the no-rollover monthly reset, spends the plan allowance
+    before purchased (non-expiring) credits, and raises ValueError when the
+    combined balance can't cover the cost.
+    Uses the consume_credits_atomic stored procedure for atomicity."""
     client = get_supabase_client()
     result = client.rpc(
-        "consume_video_quota_atomic",
+        "consume_credits_atomic",
         {
             "p_user_id": user_id,
             "p_project_id": project_id,
             "p_request_id": request_id,
+            "p_credits": credits,
         },
     ).execute()
     if not result.data:
-        raise ValueError("Video quota exhausted or project render start failed")
+        raise ValueError("Insufficient credits or project render start failed")
     return result.data
 
 
-def refund_credits(user_id: str, job_id: str, credits: int) -> None:
-    """Refund credits when a job fails after max retries."""
+def refund_credits(user_id: str, project_id: str) -> None:
+    """Refund a failed render, returning each part to where it was charged from.
+
+    Credits spent out of a purchased (non-expiring) top-up go back to the top-up
+    balance rather than the monthly allowance, which the next reset would wipe.
+    The amount comes from the project row, so this is safe to call more than once.
+    """
     client = get_supabase_client()
     client.rpc(
-        "refund_credits",
+        "refund_project_credits",
         {
             "p_user_id": user_id,
-            "p_job_id": job_id,
-            "p_credits": credits,
+            "p_project_id": project_id,
         },
     ).execute()

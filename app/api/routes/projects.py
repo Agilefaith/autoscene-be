@@ -2,6 +2,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, status
 
+from app.core.config import PLANS
 from app.core.deps import CurrentUserId, CurrentUser, AppSettings
 from app.schemas.common import NICHES
 from app.schemas.project import (
@@ -9,22 +10,17 @@ from app.schemas.project import (
     ProjectResponse, ProjectDetailResponse,
 )
 from app.services.supabase import get_supabase_client
-from app.services.credits import consume_video_quota
+from app.services.credits import calculate_project_credits, consume_credits
 from app.services.openai_service import estimate_duration_seconds
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
-# Celery+Redis priority: 0 = highest (drained first). Three paid tiers mirror the
-# pricing sheet's queue promise — Scale = priority queue, Creator = faster queue,
-# Starter = standard queue — with free/trial always drained last.
-PRIORITY_PAID = 0   # top tier (Scale) + internal
-PRIORITY_FREE = 9
-PLAN_PRIORITY = {
-    "scale": 0, "scale_m2": 0,      # Priority queue
-    "creator": 2, "creator_m2": 2,  # Faster queue
-    "starter": 4,                   # Standard queue
-    "free": PRIORITY_FREE,
-}
+# Celery+Redis priority: 0 = highest (drained first). Mirrors the pricing sheet's
+# queue promise — Pro/Scale = priority queue, Creator = faster queue, Starter =
+# standard queue — with unsubscribed accounts always drained last.
+PRIORITY_PAID = 0   # top tier (Pro/Scale) + internal
+PRIORITY_FREE = 9   # anyone without a live subscription, drained last
+PLAN_PRIORITY = {p.id: p.queue_priority for p in PLANS.values()}
 
 # Statuses where the pipeline is actively running (not re-dispatchable / not editable).
 # NOTE: `scenes_ready` is intentionally EXCLUDED — it's a "waiting for the user" state
@@ -197,7 +193,7 @@ async def generate_project(
             detail="Generate scenes first (run the scene breakdown).",
         )
 
-    plan_tier = user.get("plan_tier", "free")
+    plan_tier = user.get("plan_tier") or ""
     is_internal = user.get("user_type") == "internal"
 
     # Rate limit by tier (skip internal).
@@ -225,26 +221,19 @@ async def generate_project(
         else project["duration_seconds"]
     )
 
-    # Plan gating (skip internal): max duration per video + allowed render modes.
-    plan = settings.plan(plan_tier)
-    render_mode = project["render_mode"]
-    if not is_internal:
-        cap = min(plan.max_duration_seconds, settings.max_video_seconds)
-        if duration_seconds > cap:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    f"This video is {duration_seconds // 60} min, but your {plan.name} plan "
-                    f"allows up to {cap // 60} min per video. Shorten the script or upgrade."
-                ),
-            )
-        if render_mode not in plan.allowed_modes:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Your {plan.name} plan does not include {render_mode.replace('_', ' ').title()}. Upgrade to a Mode 2 plan.",
-            )
+    # Billing is per minute (Faith, 2026-08-05): the plan's credits are what caps
+    # length, so there is no separate per-plan duration or render-mode gate.
+    credits = calculate_project_credits(duration_seconds)
+    if not is_internal and duration_seconds > settings.max_video_seconds:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"This video is {duration_seconds // 60} min, which is over the "
+                f"{settings.max_video_seconds // 60} min maximum. Please shorten the script."
+            ),
+        )
 
-    # Persist the resolved duration, then atomically consume 1 video + flip to pending.
+    # Persist the resolved duration, then atomically charge the credits + flip to pending.
     client.table("projects").update({"duration_seconds": duration_seconds}).eq("id", project_id).execute()
     if is_internal:
         client.table("projects").update({
@@ -252,11 +241,14 @@ async def generate_project(
         }).eq("id", project_id).execute()
     else:
         try:
-            consume_video_quota(user_id, project_id, body.request_id)
+            consume_credits(user_id, project_id, body.request_id, credits)
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail="You've used all the videos in your plan for this period. It resets next month, or you can upgrade.",
+                detail=(
+                    f"This video needs {credits} credits and you don't have enough left. "
+                    "Your plan credits reset next month, or you can top up now."
+                ),
             )
 
     priority = PRIORITY_PAID if is_internal else PLAN_PRIORITY.get(plan_tier, PRIORITY_FREE)
@@ -266,7 +258,7 @@ async def generate_project(
     return {
         "project_id": project_id,
         "status": "pending",
-        "credits_used": 0 if is_internal else 1,
+        "credits_used": 0 if is_internal else credits,
     }
 
 
@@ -286,7 +278,7 @@ async def cancel_project(project_id: str, user_id: CurrentUserId):
     refunded = False
     if project.get("credits_used", 0) > 0:
         from app.services.credits import refund_credits
-        refund_credits(user_id, project_id, project["credits_used"])
+        refund_credits(user_id, project_id)
         refunded = True
     return {"status": "cancelled", "refunded": refunded}
 
@@ -330,7 +322,7 @@ async def retry_project(project_id: str, user_id: CurrentUserId, user: CurrentUs
         {"status": next_status, "error_message": None}
     ).eq("id", project_id).execute()
 
-    plan_tier = user.get("plan_tier", "free")
+    plan_tier = user.get("plan_tier") or ""
     priority = (PRIORITY_PAID if user.get("user_type") == "internal"
                 else PLAN_PRIORITY.get(plan_tier, PRIORITY_FREE))
     task = getattr(__import__(module, fromlist=[task_name]), task_name)

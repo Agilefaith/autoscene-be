@@ -63,4 +63,4 @@ def refund_on_final_failure(project: dict) -> None:
     """Refund a project's credits (call only on terminal failure)."""
     if project.get("credits_used", 0) > 0:
         from app.services.credits import refund_credits
-        refund_credits(project["user_id"], project["id"], project["credits_used"])
+        refund_credits(project["user_id"], project["id"])

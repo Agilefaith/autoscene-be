@@ -20,7 +20,7 @@ def run_due_campaigns():
 def reset_expired_video_quotas():
     """Celery Beat: refill monthly video quotas whose period has ended.
 
-    The generate path already lazy-resets inside consume_video_quota_atomic, so
+    The generate path already lazy-resets inside consume_credits_atomic, so
     this only keeps a user's DISPLAYED quota fresh when they don't generate right
     at the boundary. No rollover — balance is set to monthly_quota, not summed."""
     client = get_supabase_client()
@@ -109,4 +109,4 @@ def watchdog_stuck_jobs():
 
         if project.get("credits_used", 0) > 0:
             from app.services.credits import refund_credits
-            refund_credits(project["user_id"], project["id"], project["credits_used"])
+            refund_credits(project["user_id"], project["id"])
