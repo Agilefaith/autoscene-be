@@ -7,7 +7,9 @@ UserType = Literal["trial", "standard", "internal"]
 # ── AutoScene ─────────────────────────────────────────────────────────────────
 # Mode 1 = 1 image/scene (cinematic motion). Mode 2 = 3 images/scene (enhanced).
 # Mode 3 (real animation) is deferred — see docs/AUTOSCENE_PRD.md §13.
-RenderMode = Literal["mode_1", "mode_2"]
+# Mode 2 (3 images/scene) was removed on Faith's instruction, 2026-08-05:
+# Mode 1 is the only way to create a video.
+RenderMode = Literal["mode_1"]
 
 # AutoScene ships 16:9 (YouTube) and 9:16 (short-form) per PRD §4.7.
 AutoSceneFormat = Literal["16:9", "9:16"]

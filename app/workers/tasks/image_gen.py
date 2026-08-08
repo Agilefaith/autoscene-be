@@ -28,14 +28,9 @@ settings = get_settings()
 _MAX_CONCURRENCY = 4
 
 
-def _prompts_for(scene: dict, render_mode: str) -> list[str]:
-    """The prompt list to render for a scene: [base] for Mode 1, [A,B,C] for Mode 2."""
-    if render_mode == "mode_2":
-        prompts = scene.get("image_prompts") or []
-        if len(prompts) >= 3:
-            return prompts[:3]
-        base = scene.get("image_prompt") or ""
-        return (prompts + [base] * 3)[:3]
+def _prompts_for(scene: dict) -> list[str]:
+    """The prompt list to render for a scene. Mode 1 is the only render mode
+    (Faith, 2026-08-05), so this is always the scene's single image prompt."""
     return [scene.get("image_prompt") or ""]
 
 
@@ -106,16 +101,14 @@ async def _generate_scene_images(scene: dict, project: dict, sem: asyncio.Semaph
     sdxl_preset = style_sdxl_preset(project.get("style") or "")
     negative = style_negative(project.get("style") or "")
     seed = int(scene.get("seed") or 0)
-    prompts = _prompts_for(scene, project["render_mode"])
+    prompts = _prompts_for(scene)
 
     urls: list[str] = []
     engines: list[dict] = []
     for i, prompt in enumerate(prompts):
         async with sem:
             img, engine, fallback_reason = await _gen_one(
-                prompt, fmt, sdxl_preset,
-                seed + i if project["render_mode"] == "mode_2" else seed,
-                cast, negative)
+                prompt, fmt, sdxl_preset, seed, cast, negative)
         engines.append({"engine": engine, "fallback_reason": fallback_reason})
         key = f"projects/{project['user_id']}/{project['id']}/scene_{scene['idx']:03d}_{i}.png"
         urls.append(upload_bytes(img, key, "image/png"))

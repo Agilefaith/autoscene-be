@@ -131,13 +131,6 @@ def _system_prompt(render_mode: str) -> str:
         "grid, or before/after layout; when a scene's narration spans two moments, "
         "pick the single most visual one. Output valid JSON only."
     )
-    if render_mode == "mode_2":
-        base += (
-            " For each scene also produce THREE progressive image prompts (A, B, C) "
-            "showing slight motion progression within the scene (e.g. standing → "
-            "turning → walking). A/B/C must keep the same character identity and "
-            "environment; only pose/angle/action advances slightly."
-        )
     return base
 
 
@@ -146,17 +139,10 @@ def _user_prompt(units: list[str], niche: str, style_text: str, render_mode: str
     style_line = f"Visual style for EVERY scene: {style_text}." if style_text else ""
     niche_line = f"Content niche: {niche}." if niche else ""
     cast_line = f"{cast}\n\n" if cast else ""
-    if render_mode == "mode_2":
-        shape = (
-            '  {"emotion": str, "action": str, "environment": str, '
-            '"image_prompt": str, "image_prompts": [str, str, str]}'
-        )
-        note = '"image_prompts" must be exactly 3 progressive prompts (A,B,C).'
-    else:
-        shape = (
-            '  {"emotion": str, "action": str, "environment": str, "image_prompt": str}'
-        )
-        note = "Each scene has a single detailed image_prompt."
+    shape = (
+        '  {"emotion": str, "action": str, "environment": str, "image_prompt": str}'
+    )
+    note = "Each scene has a single detailed image_prompt."
 
     numbered = "\n".join(f"[{i + 1}] {u}" for i, u in enumerate(units))
     return (
@@ -230,7 +216,7 @@ async def breakdown_script(
     """Return a list of scene dicts ready to insert into the `scenes` table.
 
     Each dict: idx, scene_text, emotion, action, environment, image_prompt,
-    image_prompts (mode_2 only), duration_seconds.
+    duration_seconds.
 
     `characters` is the project's named cast (see services/character_sheet.py);
     their identity-lock block is shared by every breakdown call.
@@ -245,11 +231,8 @@ async def breakdown_script(
     units = segment_script(script, niche=niche, scene_seconds=scene_dur)
 
     # Bound units-per-call so one response never overflows the model's output-token
-    # cap (which truncates the JSON mid-string). Mode 2 emits 3 prompts/scene, so it
-    # packs fewer units per call.
+    # cap (which truncates the JSON mid-string).
     per_call = settings.scene_breakdown_batch
-    if render_mode == "mode_2":
-        per_call = max(1, per_call // 2)
     batches_of_units = [units[i:i + per_call] for i in range(0, len(units), per_call)]
 
     batches = await asyncio.gather(*(
@@ -272,13 +255,6 @@ async def breakdown_script(
             "image_prompt": base_prompt,
             "duration_seconds": scene_dur,
         }
-        if render_mode == "mode_2":
-            progressive = s.get("image_prompts") or []
-            # Pad/repair to exactly 3 prompts so the renderer always has A/B/C.
-            progressive = [(_decorate(p, style_text)) for p in progressive if p][:3]
-            while len(progressive) < 3:
-                progressive.append(base_prompt)
-            scene["image_prompts"] = progressive
         scenes.append(scene)
 
     return scenes
