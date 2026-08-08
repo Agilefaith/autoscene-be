@@ -1,7 +1,13 @@
+from postgrest.exceptions import APIError
+
 from app.services.supabase import get_supabase_client
 from app.core.config import get_settings
 
 settings = get_settings()
+
+# Postgres SQLSTATE for a plpgsql RAISE EXCEPTION with no explicit code — what
+# the billing functions use to refuse a charge.
+_PG_RAISE_EXCEPTION = "P0001"
 
 
 def calculate_project_credits(duration_seconds: int) -> int:
@@ -21,15 +27,24 @@ def consume_credits(user_id: str, project_id: str, request_id: str, credits: int
     combined balance can't cover the cost.
     Uses the consume_credits_atomic stored procedure for atomicity."""
     client = get_supabase_client()
-    result = client.rpc(
-        "consume_credits_atomic",
-        {
-            "p_user_id": user_id,
-            "p_project_id": project_id,
-            "p_request_id": request_id,
-            "p_credits": credits,
-        },
-    ).execute()
+    try:
+        result = client.rpc(
+            "consume_credits_atomic",
+            {
+                "p_user_id": user_id,
+                "p_project_id": project_id,
+                "p_request_id": request_id,
+                "p_credits": credits,
+            },
+        ).execute()
+    except APIError as e:
+        # The function refuses the charge with RAISE EXCEPTION, which PostgREST
+        # surfaces as an APIError rather than an empty result. Translating it
+        # here is what turns "not enough credits" into a 402 for the user
+        # instead of a 500 (see api/routes/projects.py).
+        if (e.code or "") == _PG_RAISE_EXCEPTION:
+            raise ValueError(e.message or "Insufficient credits") from e
+        raise
     if not result.data:
         raise ValueError("Insufficient credits or project render start failed")
     return result.data
