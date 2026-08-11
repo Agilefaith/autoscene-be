@@ -57,23 +57,33 @@ def _sentences(text: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+def _pair_lines_or_sentences(block: str) -> list[str]:
+    """Pair a block into ~2-line (or ~2-sentence) units. Never merges across a
+    caller-supplied boundary — this only looks inside the one block it's given."""
+    lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+    if len(lines) > 1:
+        return [" ".join(lines[i:i + 2]) for i in range(0, len(lines), 2)]
+    sents = _sentences(block)
+    return [" ".join(sents[i:i + 2]) for i in range(0, len(sents), 2)] or [block]
+
+
 def split_into_stanzas(script: str) -> list[str]:
     """One unit per two-line stanza — the shape of Faith's high-retention scripts.
 
-    Blank-line separated stanzas are used as authored. A script without blank
-    lines falls back to pairing consecutive lines, then to pairing sentences, so
-    a pasted script never collapses into one giant scene.
+    Blank lines mark paragraph boundaries the script's author intended, so a unit
+    never merges content across them. But a boundary alone doesn't cap length: a
+    paragraph pasted as ordinary prose (3-5 sentences, no internal line breaks)
+    used to come back as ONE scene holding all of it, because this only trusted
+    blank-line blocks verbatim. Faith's AI-generated scripts already write clean
+    2-line paragraphs, so that case looked fine — a plain pasted paragraph did
+    not. Each block is now re-paired down to ~2 lines/sentences, same as the
+    single-block fallback below, so the 2-unit shape holds regardless of how the
+    script was formatted.
     """
     blocks = [b.strip() for b in re.split(r"\n\s*\n", script or "") if b.strip()]
     if len(blocks) > 1:
-        return blocks
-
-    lines = [ln.strip() for ln in (script or "").splitlines() if ln.strip()]
-    if len(lines) > 1:
-        return [" ".join(lines[i:i + 2]) for i in range(0, len(lines), 2)]
-
-    sents = _sentences(script)
-    return [" ".join(sents[i:i + 2]) for i in range(0, len(sents), 2)] or [script.strip()]
+        return [u for block in blocks for u in _pair_lines_or_sentences(block)]
+    return _pair_lines_or_sentences((script or "").strip())
 
 
 def split_by_duration(script: str, scene_seconds: int) -> list[str]:
