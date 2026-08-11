@@ -30,7 +30,7 @@ def generate_image_gemini(
     fmt: str = "9:16",
     *,
     reference_bytes: bytes | None = None,
-    references: list[tuple[str, bytes]] | None = None,
+    references: list[tuple[str, bytes]] | list[tuple[str, bytes, str]] | None = None,
     reference_mime: str = "image/png",
 ) -> bytes:
     """Generate one image via Gemini (synchronous; called from a worker thread).
@@ -38,15 +38,23 @@ def generate_image_gemini(
     `references` is the project's named cast as [(name, image_bytes)] — each one
     is attached with a label so Gemini knows which face belongs to which name in
     the prompt. `reference_bytes` is the legacy single-reference form.
+
+    Each entry may optionally carry its own mime type as a 3rd tuple element
+    — (name, bytes, mime) — for callers mixing upload formats (e.g. the
+    thumbnail cloner's reference + avatar, which can each be png/jpeg/webp).
+    Entries without one fall back to `reference_mime`, unchanged from before.
+
     Raises on failure so the caller can fall back to Stability."""
     parts: list = [{"text": prompt}]
-    for name, data in (references or []):
+    for ref in (references or []):
+        name, data = ref[0], ref[1]
+        mime = ref[2] if len(ref) > 2 else reference_mime
         if name:
             parts.append({"text": f"Reference image for {name} — keep this character's "
                                   f"face, hair, skin tone, and build identical:"})
         parts.append({
             "inline_data": {
-                "mime_type": reference_mime,
+                "mime_type": mime,
                 "data": base64.b64encode(data).decode(),
             }
         })

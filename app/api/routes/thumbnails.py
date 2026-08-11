@@ -34,6 +34,15 @@ _CLONE_PROMPT = (
     "High contrast, vivid colors, one clear focal point.{text_directive}"
 )
 
+# Appended only when the user attaches an avatar/face photo (Faith, 2026-08-11):
+# the reference thumbnail still supplies composition/style, this photo supplies
+# who is actually in the shot.
+_AVATAR_DIRECTIVE = (
+    " A second reference image is attached showing the person to feature in this "
+    "thumbnail. Place them into the composition as its subject, matching their "
+    "face, hair, and skin tone exactly, styled to fit the scene."
+)
+
 # Rendering words correctly is the weak spot of image models: asking for
 # "NO JAGUARS" produced "NO JAGJAARS" (Faith, 2026-08-03). Quoting the exact
 # string and spelling it out letter by letter is what makes it land.
@@ -83,8 +92,14 @@ async def clone_thumbnail(
     user_id: CurrentUserId,
     file: UploadFile = File(...),
     instructions: str = Form(""),
+    avatar: UploadFile | None = File(None),
 ):
-    """Clone a competitor's thumbnail from a reference image (synchronous)."""
+    """Clone a competitor's thumbnail from a reference image (synchronous).
+
+    `avatar` is optional (Faith, 2026-08-11): a second reference photo of a
+    person to feature in the generated thumbnail, for users who want a face on
+    it. Nothing else about the flow changes when it's omitted.
+    """
     if (file.content_type or "").lower() not in _ALLOWED:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -96,6 +111,23 @@ async def clone_thumbnail(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="Reference image must be under 8 MB.",
         )
+
+    avatar_data: bytes | None = None
+    avatar_mime = "image/png"
+    if avatar is not None and avatar.filename:
+        if (avatar.content_type or "").lower() not in _ALLOWED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Avatar must be a PNG, JPG, or WEBP image.",
+            )
+        avatar_data = await avatar.read()
+        if len(avatar_data) > _MAX_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Avatar image must be under 8 MB.",
+            )
+        avatar_mime = (avatar.content_type or "image/png").lower()
+
     if not (settings.image_provider == "gemini" and settings.google_ai_api_key):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -105,12 +137,16 @@ async def clone_thumbnail(
     instr = instructions.strip() or "keep the same subject and mood"
     headline = wanted_headline(instr)
     prompt = _CLONE_PROMPT.format(
-        instructions=instr, text_directive=_TEXT_DIRECTIVE if headline else "")
+        instructions=instr,
+        text_directive=(_TEXT_DIRECTIVE if headline else "") + (_AVATAR_DIRECTIVE if avatar_data else ""),
+    )
+    references: list[tuple[str, bytes, str]] = [("", data, (file.content_type or "image/png").lower())]
+    if avatar_data:
+        references.append(("the person to feature in this thumbnail", avatar_data, avatar_mime))
+
     try:
         img = await asyncio.to_thread(
-            generate_image_gemini, prompt, "16:9",
-            references=[("", data)],
-            reference_mime=(file.content_type or "image/png").lower(),
+            generate_image_gemini, prompt, "16:9", references=references,
         )
     except GeminiCreditsDepletedError:
         raise HTTPException(
