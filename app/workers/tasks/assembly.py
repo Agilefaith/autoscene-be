@@ -97,17 +97,22 @@ def assemble_task(self, project_id: str):
         else:
             shutil.copy(silent_path, muxed_path)
 
-        # 3) Subtitles: transcribe the narration and burn (skip if disabled).
-        transcription: dict = {}
+        # 3) Subtitles: burn using the transcript the voiceover stage already made
+        # (skip if disabled). Re-transcribing here would cost a second Whisper
+        # call for audio we've already transcribed once, and risks giving
+        # subtitles slightly different word timings than what the scenes were
+        # actually synced to.
+        transcription: dict = project.get("transcription") or {}
         subtitles_burned = False
         if project.get("subtitle_enabled", True) and os.path.exists(audio_path):
-            # mp3 voiceover is already small; extract a 16k mono mp3 to stay under
-            # Whisper's 25 MB cap on long narrations.
-            trans_src = os.path.join(tmpdir, "transcribe.mp3")
-            src = trans_src if _extract_audio(audio_path, trans_src) else audio_path
-            # Seed Whisper with the cast names so subtitles spell them correctly.
-            cast_names = [c.get("name") for c in (project.get("characters") or []) if c.get("name")]
-            transcription = asyncio.run(transcribe(src, vocabulary=cast_names))
+            if not transcription.get("segments"):
+                # No stored transcript (older project, or the voiceover stage's
+                # own transcription attempt failed) — fall back to transcribing
+                # now rather than shipping a video with no captions.
+                trans_src = os.path.join(tmpdir, "transcribe.mp3")
+                src = trans_src if _extract_audio(audio_path, trans_src) else audio_path
+                cast_names = [c.get("name") for c in (project.get("characters") or []) if c.get("name")]
+                transcription = asyncio.run(transcribe(src, vocabulary=cast_names))
             style = {
                 "font_color": project.get("subtitle_color", "#FFFFFF"),
                 "font_size": project.get("subtitle_size") or 84,  # readable default (see SUBTITLE_SIZES)

@@ -37,6 +37,73 @@ async def transcribe(audio_path: str, vocabulary: list[str] | None = None) -> di
     }
 
 
+def _bare(s: str) -> str:
+    return re.sub(r"[^\w']+", "", s or "").lower()
+
+
+def scene_durations_from_transcript(
+    scenes: list[dict], segments: list[dict], audio_seconds: float,
+    min_scene_seconds: float = 2.0,
+) -> list[float]:
+    """Exact per-scene duration from Whisper's word-level timings, not an
+    estimate.
+
+    The previous approach split the audio's total duration across scenes
+    proportional to each scene's word count, assuming a constant speaking rate.
+    Real narration doesn't read at a constant rate — short, punchy lines (common
+    in Faith's storytelling niches) are spoken slower per word than description,
+    so that estimate drifted several seconds ahead of the real narration by the
+    middle of a long video: images kept advancing on the assumed schedule while
+    the actual voice was still catching up (Faith, 2026-08-16).
+
+    Scene i's duration is instead the real gap between where its narration
+    starts and where the next scene's starts (the last scene runs to the end of
+    the audio) — so scene boundaries land exactly where they were actually
+    spoken, with zero accumulated error regardless of video length.
+    """
+    starts = _scene_start_times(scenes, segments)
+    durations: list[float] = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else max(audio_seconds, start)
+        durations.append(max(min_scene_seconds, round(end - start, 2)))
+    return durations
+
+
+def _scene_start_times(scenes: list[dict], segments: list[dict]) -> list[float]:
+    """The timestamp each scene's narration actually starts at.
+
+    Walks the transcript's words in order and matches each scene's own first
+    few words against them, advancing a pointer roughly by that scene's word
+    count — the same tolerant, small-lookahead matching _restore_punctuation
+    uses for subtitles, so an occasional word Whisper drops or adds doesn't
+    permanently desync everything after it. Falls back to holding the previous
+    scene's start (never runs backward, never crashes) when a scene's words
+    can't be found at all.
+    """
+    si = 0
+    starts: list[float] = []
+    for scene in scenes:
+        tokens = [_bare(w) for w in (scene.get("scene_text") or "").split() if _bare(w)]
+        if not tokens or not segments:
+            starts.append(starts[-1] if starts else 0.0)
+            continue
+
+        target = tokens[0]
+        found: float | None = None
+        for probe in range(si, min(si + 6, len(segments))):
+            if _bare(segments[probe]["word"]) == target:
+                si = probe
+                found = segments[probe]["start"]
+                break
+        if found is None:
+            found = segments[si]["start"] if si < len(segments) else starts[-1] if starts else 0.0
+
+        prev = starts[-1] if starts else 0.0
+        starts.append(max(found, prev))  # scenes never run out of order
+        si = min(si + len(tokens), len(segments))
+    return starts
+
+
 def _restore_punctuation(words: list[dict], text: str) -> list[dict]:
     """Re-attach punctuation from the full transcript onto the word timings.
 
@@ -51,16 +118,13 @@ def _restore_punctuation(words: list[dict], text: str) -> list[dict]:
     if not words or not tokens:
         return words
 
-    def bare(s: str) -> str:
-        return re.sub(r"[^\w']+", "", s).lower()
-
     out: list[dict] = []
     ti = 0
     for w in words:
-        target = bare(w["word"])
+        target = _bare(w["word"])
         # tolerate the odd extra/missing token between the two streams
         for probe in range(ti, min(ti + 3, len(tokens))):
-            if bare(tokens[probe]) == target:
+            if _bare(tokens[probe]) == target:
                 w = {**w, "word": tokens[probe]}
                 ti = probe + 1
                 break
